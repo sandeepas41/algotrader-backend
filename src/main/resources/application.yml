@@ -28,7 +28,7 @@ spring:
     type: caffeine
 
 server:
-  port: 40001
+  port: 40002
   servlet:
     context-path: /
 
