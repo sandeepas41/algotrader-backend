@@ -39,7 +39,7 @@
 
 ### Formatting
 - Spotless + Palantir Java Format enforced (run `./mvnw spotless:apply` before committing)
-- 4-space indentation for Java, 2-space for YAML
+- 4-space indentation for Java
 
 ### Testing
 - Use H2 in-memory (`jdbc:h2:mem:test`) for tests
