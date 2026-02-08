@@ -20,10 +20,8 @@ out/
 .DS_Store
 Thumbs.db
 
-# Maven
-.mvn/
-mvnw
-mvnw.cmd
+# Maven (wrapper is tracked intentionally)
+# .mvn/wrapper/maven-wrapper.jar is committed for reproducible builds
 
 # H2 Database files
 data/*.db
