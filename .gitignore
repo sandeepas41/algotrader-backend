@@ -29,6 +29,11 @@ data/*.mv.db
 data/*.trace.db
 data/*.lock.db
 
+# Dev server
+dev.log
+dev.log.prev
+.dev.pid
+
 # Logs
 *.log
 logs/
