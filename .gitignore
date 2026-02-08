@@ -1,0 +1,42 @@
+# Build
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+# IDE
+.idea/
+*.iws
+*.iml
+*.ipr
+.vscode/
+.project
+.classpath
+.settings/
+bin/
+out/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Maven
+.mvn/
+mvnw
+mvnw.cmd
+
+# H2 Database files
+data/*.db
+data/*.mv.db
+data/*.trace.db
+data/*.lock.db
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+
+# Tick recordings
+tick-recordings/
