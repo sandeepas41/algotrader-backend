@@ -34,7 +34,8 @@ import org.springframework.web.bind.annotation.RestController;
  *   <li>POST /api/auth/callback       - Handles the OAuth redirect with request_token</li>
  *   <li>POST /api/auth/re-authenticate - Triggers on-demand re-auth (via sidecar)</li>
  *   <li>GET  /api/auth/status         - Returns broker authentication status</li>
- *   <li>POST /api/auth/logout         - Invalidates the Kite session</li>
+ *   <li>POST /api/auth/logout         - App-level JWT logout (preserves broker session)</li>
+ *   <li>POST /api/auth/broker-logout - Explicitly invalidates the Kite broker session</li>
  * </ul>
  */
 @RestController
@@ -126,13 +127,27 @@ public class AuthController {
     }
 
     /**
-     * Logs out by invalidating the Kite access token and clearing local session state.
-     * After logout, the trader must re-authenticate via the login flow.
+     * App-level logout — JWT is stateless so nothing to invalidate server-side.
+     * The frontend clears the JWT from localStorage on its own.
+     *
+     * <p>This does NOT invalidate the Kite broker session. Kite sessions are expensive
+     * to acquire (Playwright login) and should persist until their natural 6 AM IST expiry.
+     * Use {@code POST /api/auth/broker-logout} to explicitly tear down the broker session.
      */
     @PostMapping("/logout")
     public ResponseEntity<Map<String, String>> logout() {
-        log.info("Logout requested");
-        kiteAuthService.logout();
+        log.info("App-level logout requested (broker session preserved)");
         return ResponseEntity.ok(Map.of("message", "Logged out successfully"));
+    }
+
+    /**
+     * Explicitly invalidates the Kite broker session and clears all persisted session state.
+     * Use only when the trader intentionally wants to disconnect from the broker.
+     */
+    @PostMapping("/broker-logout")
+    public ResponseEntity<Map<String, String>> brokerLogout() {
+        log.info("Broker logout requested");
+        kiteAuthService.logout();
+        return ResponseEntity.ok(Map.of("message", "Broker session invalidated"));
     }
 }

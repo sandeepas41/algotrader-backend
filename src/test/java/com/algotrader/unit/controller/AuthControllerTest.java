@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.algotrader.api.controller.AuthController;
+import com.algotrader.auth.AppAuthService;
 import com.algotrader.broker.KiteAuthService;
 import com.algotrader.config.ApiResponseAdvice;
 import java.time.LocalDateTime;
@@ -33,6 +34,9 @@ class AuthControllerTest {
 
     @Mock
     private KiteAuthService kiteAuthService;
+
+    @Mock
+    private AppAuthService appAuthService;
 
     @InjectMocks
     private AuthController authController;
@@ -122,11 +126,22 @@ class AuthControllerTest {
     }
 
     @Test
-    @DisplayName("POST /api/auth/logout calls service logout")
+    @DisplayName("POST /api/auth/logout returns OK without touching broker session")
     void logoutSucceeds() throws Exception {
         mockMvc.perform(post("/api/auth/logout"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.message").value("Logged out successfully"));
+
+        // App-level logout must NOT invalidate the Kite broker session
+        verify(kiteAuthService, org.mockito.Mockito.never()).logout();
+    }
+
+    @Test
+    @DisplayName("POST /api/auth/broker-logout invalidates the Kite broker session")
+    void brokerLogoutSucceeds() throws Exception {
+        mockMvc.perform(post("/api/auth/broker-logout"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.message").value("Broker session invalidated"));
 
         verify(kiteAuthService).logout();
     }
