@@ -45,7 +45,12 @@ class StrategyFactoryTest {
             StrategyType.BEAR_PUT_SPREAD,
             StrategyType.CALENDAR_SPREAD,
             StrategyType.DIAGONAL_SPREAD,
-            StrategyType.SCALPING);
+            StrategyType.SCALPING,
+            StrategyType.CE_BUY,
+            StrategyType.CE_SELL,
+            StrategyType.PE_BUY,
+            StrategyType.PE_SELL,
+            StrategyType.LONG_STRADDLE);
 
     @BeforeEach
     void setUp() {

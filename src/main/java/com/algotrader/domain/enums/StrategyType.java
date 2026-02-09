@@ -3,8 +3,9 @@ package com.algotrader.domain.enums;
 /**
  * Supported options strategy types. Each type has a dedicated implementation
  * extending BaseStrategy with its own entry/exit/adjustment logic.
- * SCALPING is tick-level with point-based exits. CUSTOM allows user-defined
- * multi-leg configurations.
+ * SCALPING is tick-level with point-based exits. CE_BUY/CE_SELL/PE_BUY/PE_SELL
+ * are single-leg naked options (positional or scalping mode). LONG_STRADDLE buys
+ * both ATM CE+PE. CUSTOM allows user-defined multi-leg configurations.
  */
 public enum StrategyType {
     IRON_CONDOR,
@@ -18,5 +19,10 @@ public enum StrategyType {
     CALENDAR_SPREAD,
     DIAGONAL_SPREAD,
     SCALPING,
+    CE_BUY,
+    CE_SELL,
+    PE_BUY,
+    PE_SELL,
+    LONG_STRADDLE,
     CUSTOM
 }
