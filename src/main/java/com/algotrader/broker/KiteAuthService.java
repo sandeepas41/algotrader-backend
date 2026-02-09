@@ -5,9 +5,6 @@ import com.algotrader.entity.KiteSessionEntity;
 import com.algotrader.exception.BrokerException;
 import com.algotrader.repository.jpa.KiteSessionJpaRepository;
 import com.algotrader.repository.redis.KiteSessionRedisRepository;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zerodhatech.kiteconnect.KiteConnect;
 import com.zerodhatech.kiteconnect.kitehttp.exceptions.KiteException;
 import com.zerodhatech.models.User;
@@ -22,20 +19,19 @@ import org.json.JSONException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
 
 /**
  * Manages the Kite Connect OAuth lifecycle: login URL generation, callback handling,
- * automated sidecar login, and on-demand re-authentication.
+ * automated Playwright login, and on-demand re-authentication.
  *
  * <p>Operates on a shared {@link KiteConnect} Spring bean (created in
  * {@link KiteConfig}). After successful authentication, this service sets the
  * access token, user ID, and public token on that bean so all other broker
  * services can use the same authenticated SDK client.
  *
- * <p>On startup, checks H2 for a valid (non-expired) token. If none is found and the
- * kite-login sidecar is enabled, calls the sidecar at localhost:3010 to automate the
- * Kite OAuth flow via Puppeteer + TOTP. Tokens are persisted to both H2 (durable) and
+ * <p>On startup, checks H2 for a valid (non-expired) token. If none is found and
+ * auto-login is enabled, uses {@link KiteLoginAutomation} to automate the Kite OAuth
+ * flow via headless Chromium + TOTP. Tokens are persisted to both H2 (durable) and
  * Redis (fast reads with TTL aligned to 6 AM IST).
  *
  * <p>Provides a single-flight reauth gate using a {@link ReentrantLock} so that when
@@ -48,13 +44,12 @@ import org.springframework.web.client.RestClient;
 public class KiteAuthService {
 
     private static final Logger log = LoggerFactory.getLogger(KiteAuthService.class);
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final KiteConfig kiteConfig;
     private final KiteConnect kiteConnect;
     private final KiteSessionJpaRepository kiteSessionJpaRepository;
     private final KiteSessionRedisRepository kiteSessionRedisRepository;
-    private final RestClient sidecarRestClient;
+    private final KiteLoginAutomation kiteLoginAutomation;
 
     /** Single-flight gate: prevents concurrent reauth storms when multiple threads detect 403. */
     private final ReentrantLock reauthLock = new ReentrantLock();
@@ -69,19 +64,19 @@ public class KiteAuthService {
             KiteConnect kiteConnect,
             KiteSessionJpaRepository kiteSessionJpaRepository,
             KiteSessionRedisRepository kiteSessionRedisRepository,
-            RestClient sidecarRestClient) {
+            KiteLoginAutomation kiteLoginAutomation) {
         this.kiteConfig = kiteConfig;
         this.kiteConnect = kiteConnect;
         this.kiteSessionJpaRepository = kiteSessionJpaRepository;
         this.kiteSessionRedisRepository = kiteSessionRedisRepository;
-        this.sidecarRestClient = sidecarRestClient;
+        this.kiteLoginAutomation = kiteLoginAutomation;
     }
 
     /**
      * Startup auth flow: check H2 for a valid (non-expired) token.
-     * If found, reuse it. If not, call the sidecar for automated login.
+     * If found, reuse it. If not, attempt automated login via Playwright.
      *
-     * @throws BrokerException if token acquisition fails and sidecar is enabled
+     * @throws BrokerException if token acquisition fails and auto-login is enabled
      */
     public void acquireTokenOnStartup() {
         // Step 1: Check H2 for a non-expired token
@@ -96,31 +91,31 @@ public class KiteAuthService {
             return;
         }
 
-        // Step 2: No valid token in H2 -- try automated sidecar login
-        if (!kiteConfig.getSidecar().isEnabled()) {
-            log.warn("No valid token in H2 and sidecar is disabled. System starts in degraded mode.");
+        // Step 2: No valid token in H2 -- try automated Playwright login
+        if (!kiteConfig.getAutoLogin().isEnabled()) {
+            log.warn("No valid token in H2 and auto-login is disabled. System starts in degraded mode.");
             return;
         }
 
-        log.info("No valid token in H2, calling kite-login sidecar for automated login...");
+        log.info("No valid token in H2, starting automated Playwright login...");
         autoLogin();
     }
 
     /**
-     * Automated login via the kite-login sidecar at localhost:3010.
-     * The sidecar automates the Kite OAuth flow using Puppeteer + TOTP.
+     * Automated login via Playwright (headless Chromium + TOTP).
+     * Obtains a request_token and exchanges it for an access_token.
      *
-     * @throws BrokerException if the sidecar call or token exchange fails
+     * @throws BrokerException if the Playwright automation or token exchange fails
      */
     public void autoLogin() {
         try {
-            String requestToken = callSidecarForRequestToken();
+            String requestToken = kiteLoginAutomation.obtainRequestToken();
             exchangeAndSaveToken(requestToken);
             log.info("Auto-login successful for user: {}", currentUserName);
         } catch (BrokerException e) {
             throw e;
         } catch (Exception e) {
-            throw new BrokerException("Auto-login via sidecar failed: " + e.getMessage(), e);
+            throw new BrokerException("Auto-login via Playwright failed: " + e.getMessage(), e);
         }
     }
 
@@ -174,15 +169,50 @@ public class KiteAuthService {
 
         try {
             log.info("Starting re-authentication...");
-            if (kiteConfig.getSidecar().isEnabled()) {
+            if (kiteConfig.getAutoLogin().isEnabled()) {
                 autoLogin();
             } else {
-                log.warn("Sidecar disabled -- cannot auto-reauth. Manual login required via /api/auth/login-url");
-                throw new BrokerException("Cannot re-authenticate: sidecar is disabled");
+                log.warn("Auto-login disabled -- cannot auto-reauth. Manual login required via /api/auth/login-url");
+                throw new BrokerException("Cannot re-authenticate: auto-login is disabled");
             }
         } finally {
             reauthLock.unlock();
         }
+    }
+
+    /**
+     * Logs out by invalidating the Kite access token on the Kite API side,
+     * clearing local in-memory state, and removing persisted sessions from H2 and Redis.
+     *
+     * <p>If the Kite API call to invalidate the token fails (e.g., token already expired),
+     * local state is still cleared so the user can re-authenticate.
+     */
+    public void logout() {
+        // Attempt to invalidate the token on Kite's side
+        if (accessToken != null) {
+            try {
+                kiteConnect.invalidateAccessToken();
+                log.info("Kite access token invalidated via API");
+            } catch (KiteException | JSONException | IOException e) {
+                // Token may already be expired or invalid -- still clear local state
+                log.warn("Failed to invalidate Kite access token (may already be expired): {}", e.getMessage());
+            }
+        }
+
+        // Clear local in-memory state
+        String previousUserId = this.currentUserId;
+        this.accessToken = null;
+        this.currentUserId = null;
+        this.currentUserName = null;
+        this.tokenExpiry = null;
+
+        // Remove persisted sessions
+        kiteSessionJpaRepository.deleteAll();
+        if (previousUserId != null) {
+            kiteSessionRedisRepository.deleteSession(previousUserId);
+        }
+
+        log.info("Logout complete, all session state cleared");
     }
 
     public boolean isAuthenticated() {
@@ -210,33 +240,6 @@ public class KiteAuthService {
     }
 
     // ---- Private helpers ----
-
-    /**
-     * Calls the kite-login sidecar at /kite/request-token to obtain a request token.
-     * The sidecar automates the Kite web login using Puppeteer (headless Chrome) + TOTP.
-     */
-    private String callSidecarForRequestToken() {
-        log.info(
-                "Calling sidecar at {}/kite/request-token",
-                kiteConfig.getSidecar().getUrl());
-
-        String responseBody =
-                sidecarRestClient.get().uri("/kite/request-token").retrieve().body(String.class);
-
-        try {
-            JsonNode json = OBJECT_MAPPER.readTree(responseBody);
-            String status = json.get("status").asText();
-            if (!"success".equals(status)) {
-                String errorMsg = json.has("message") ? json.get("message").asText() : "Unknown sidecar error";
-                throw new BrokerException("Sidecar returned error: " + errorMsg);
-            }
-            String token = json.get("token").asText();
-            log.info("Received request token from sidecar");
-            return token;
-        } catch (JsonProcessingException e) {
-            throw new BrokerException("Failed to parse sidecar response", e);
-        }
-    }
 
     /**
      * Exchanges a request token for an access token via the Kite API,

@@ -93,6 +93,20 @@
             <version>${kiteconnect.version}</version>
         </dependency>
 
+        <!-- Browser Automation for Kite login (Puppeteer equivalent in Java) -->
+        <dependency>
+            <groupId>com.microsoft.playwright</groupId>
+            <artifactId>playwright</artifactId>
+            <version>1.50.0</version>
+        </dependency>
+
+        <!-- TOTP generation for Kite 2FA (RFC 6238) -->
+        <dependency>
+            <groupId>com.eatthepath</groupId>
+            <artifactId>java-otp</artifactId>
+            <version>0.4.0</version>
+        </dependency>
+
         <!-- Resilience -->
         <dependency>
             <groupId>io.github.resilience4j</groupId>
@@ -245,9 +259,30 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
                     <argLine>-Xmx512m</argLine>
+                    <excludedGroups>manual</excludedGroups>
                 </configuration>
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- Profile for running manual tests (Playwright login, etc.) -->
+        <!-- Usage: ./mvnw test -Pmanual -Dtest=KiteLoginAutomationManualTest -->
+        <profile>
+            <id>manual</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <excludedGroups combine.self="override"/>
+                            <groups>manual</groups>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 
 </project>
