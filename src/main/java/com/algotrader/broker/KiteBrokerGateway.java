@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 
 /**
@@ -29,6 +30,7 @@ import org.springframework.stereotype.Component;
  * is explicitly selected for kill switch operations in HYBRID mode.
  */
 @Component
+@Primary
 public class KiteBrokerGateway implements BrokerGateway {
 
     private static final Logger log = LoggerFactory.getLogger(KiteBrokerGateway.class);

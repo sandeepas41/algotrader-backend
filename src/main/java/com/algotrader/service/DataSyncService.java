@@ -67,6 +67,7 @@ public class DataSyncService {
     private final DeadLetterEventJpaRepository deadLetterEventJpaRepository;
     private final RedisTemplate<String, Object> redisTemplate;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public DataSyncService(
             TradeJpaRepository tradeJpaRepository,
             AuditLogJpaRepository auditLogJpaRepository,
