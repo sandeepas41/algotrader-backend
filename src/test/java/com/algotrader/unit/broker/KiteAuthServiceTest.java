@@ -8,6 +8,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.algotrader.broker.KiteAuthService;
+import com.algotrader.broker.KiteLoginAutomation;
 import com.algotrader.config.KiteConfig;
 import com.algotrader.entity.KiteSessionEntity;
 import com.algotrader.exception.BrokerException;
@@ -26,7 +27,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.web.client.RestClient;
 
 /**
  * Unit tests for {@link KiteAuthService}.
@@ -45,6 +45,9 @@ class KiteAuthServiceTest {
     @Mock
     private KiteSessionRedisRepository kiteSessionRedisRepository;
 
+    @Mock
+    private KiteLoginAutomation kiteLoginAutomation;
+
     private KiteConfig kiteConfig;
     private KiteConnect kiteConnect;
     private KiteAuthService kiteAuthService;
@@ -55,22 +58,15 @@ class KiteAuthServiceTest {
         kiteConfig.setApiKey("test-api-key");
         kiteConfig.setApiSecret("test-api-secret");
 
-        KiteConfig.Sidecar sidecar = new KiteConfig.Sidecar();
-        sidecar.setUrl("http://localhost:3010");
-        sidecar.setEnabled(false);
-        sidecar.setConnectTimeout(5000);
-        sidecar.setReadTimeout(30000);
-        kiteConfig.setSidecar(sidecar);
+        KiteConfig.AutoLogin autoLogin = new KiteConfig.AutoLogin();
+        autoLogin.setEnabled(false);
+        kiteConfig.setAutoLogin(autoLogin);
 
         // Real KiteConnect bean (same as KiteConfig.kiteConnect() would produce)
         kiteConnect = new KiteConnect("test-api-key");
 
-        // Sidecar RestClient -- not actually called in most tests (sidecar is disabled)
-        RestClient sidecarRestClient =
-                RestClient.builder().baseUrl("http://localhost:3010").build();
-
         kiteAuthService = new KiteAuthService(
-                kiteConfig, kiteConnect, kiteSessionJpaRepository, kiteSessionRedisRepository, sidecarRestClient);
+                kiteConfig, kiteConnect, kiteSessionJpaRepository, kiteSessionRedisRepository, kiteLoginAutomation);
     }
 
     @Test
@@ -165,8 +161,8 @@ class KiteAuthServiceTest {
     }
 
     @Test
-    @DisplayName("acquireTokenOnStartup starts degraded mode when H2 is empty and sidecar disabled")
-    void acquireTokenOnStartup_degradedMode_whenNoTokenAndSidecarDisabled() {
+    @DisplayName("acquireTokenOnStartup starts degraded mode when H2 is empty and auto-login disabled")
+    void acquireTokenOnStartup_degradedMode_whenNoTokenAndAutoLoginDisabled() {
         when(kiteSessionJpaRepository.findAll()).thenReturn(List.of());
 
         kiteAuthService.acquireTokenOnStartup();
@@ -175,8 +171,8 @@ class KiteAuthServiceTest {
     }
 
     @Test
-    @DisplayName("reAuthenticate with sidecar disabled throws BrokerException")
-    void reAuthenticate_throwsWhenSidecarDisabled() {
+    @DisplayName("reAuthenticate with auto-login disabled throws BrokerException")
+    void reAuthenticate_throwsWhenAutoLoginDisabled() {
         assertThatThrownBy(() -> kiteAuthService.reAuthenticate()).isInstanceOf(BrokerException.class);
     }
 
@@ -205,8 +201,8 @@ class KiteAuthServiceTest {
     @Test
     @DisplayName("Single-flight reauth gate: 5 concurrent threads, only 1 triggers reauth")
     void singleFlightReauthGate_onlyOneThreadTriggersReauth() throws Exception {
-        // Enable sidecar so reAuthenticate() attempts the auto-login path
-        kiteConfig.getSidecar().setEnabled(true);
+        // Enable auto-login so reAuthenticate() attempts the Playwright login path
+        kiteConfig.getAutoLogin().setEnabled(true);
 
         int threadCount = 5;
         CountDownLatch startLatch = new CountDownLatch(1);
@@ -223,7 +219,7 @@ class KiteAuthServiceTest {
                     kiteAuthService.reAuthenticate();
                     reauthSuccess.incrementAndGet();
                 } catch (Exception e) {
-                    // Only the thread that actually calls autoLogin gets the sidecar error;
+                    // Only the thread that actually calls autoLogin gets the error;
                     // other threads wait on the lock and return without error
                     reauthErrors.incrementAndGet();
                 } finally {
@@ -237,7 +233,7 @@ class KiteAuthServiceTest {
         doneLatch.await();
         executor.shutdown();
 
-        // Exactly 1 thread should have attempted autoLogin and failed (sidecar unreachable).
+        // Exactly 1 thread should have attempted autoLogin and failed (Playwright not available in test).
         // The remaining threads waited on the lock and returned without error.
         assertThat(reauthErrors.get()).isEqualTo(1);
         assertThat(reauthSuccess.get()).isEqualTo(threadCount - 1);
@@ -255,5 +251,50 @@ class KiteAuthServiceTest {
     @DisplayName("getAccessToken returns null when not authenticated")
     void getAccessToken_returnsNull_whenNotAuthenticated() {
         assertThat(kiteAuthService.getAccessToken()).isNull();
+    }
+
+    @Test
+    @DisplayName("logout clears in-memory state and deletes sessions from H2 and Redis")
+    void logout_clearsStateAndDeletesSessions() {
+        // First, set up an authenticated state via acquireTokenOnStartup
+        LocalDateTime futureExpiry = LocalDateTime.now().plusHours(10);
+        KiteSessionEntity validSession = KiteSessionEntity.builder()
+                .id("session-1")
+                .userId("AB1234")
+                .accessToken("valid-access-token")
+                .userName("Test User")
+                .loginTime(LocalDateTime.now().minusHours(1))
+                .expiresAt(futureExpiry)
+                .createdAt(LocalDateTime.now().minusHours(1))
+                .build();
+
+        when(kiteSessionJpaRepository.findAll()).thenReturn(List.of(validSession));
+        when(kiteSessionRedisRepository.hasSession("AB1234")).thenReturn(true);
+        kiteAuthService.acquireTokenOnStartup();
+        assertThat(kiteAuthService.isAuthenticated()).isTrue();
+
+        // Now logout
+        kiteAuthService.logout();
+
+        assertThat(kiteAuthService.isAuthenticated()).isFalse();
+        assertThat(kiteAuthService.getAccessToken()).isNull();
+        assertThat(kiteAuthService.getCurrentUserId()).isNull();
+        assertThat(kiteAuthService.getCurrentUserName()).isNull();
+        assertThat(kiteAuthService.getTokenExpiry()).isNull();
+
+        // Verify persistence was cleaned up
+        verify(kiteSessionJpaRepository).deleteAll();
+        verify(kiteSessionRedisRepository).deleteSession("AB1234");
+    }
+
+    @Test
+    @DisplayName("logout when not authenticated still clears persistence stores")
+    void logout_whenNotAuthenticated_stillClearsStores() {
+        assertThat(kiteAuthService.isAuthenticated()).isFalse();
+
+        kiteAuthService.logout();
+
+        assertThat(kiteAuthService.isAuthenticated()).isFalse();
+        verify(kiteSessionJpaRepository).deleteAll();
     }
 }

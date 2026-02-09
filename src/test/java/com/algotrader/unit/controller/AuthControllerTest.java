@@ -18,6 +18,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
@@ -55,13 +56,30 @@ class AuthControllerTest {
     }
 
     @Test
-    @DisplayName("GET /api/auth/callback handles OAuth callback with request_token")
+    @DisplayName("POST /api/auth/callback handles OAuth callback with request_token in JSON body")
     void handleCallbackSucceeds() throws Exception {
-        mockMvc.perform(get("/api/auth/callback").param("request_token", "test-token"))
+        when(kiteAuthService.getCurrentUserId()).thenReturn("XY1234");
+        when(kiteAuthService.getCurrentUserName()).thenReturn("Test User");
+        when(kiteAuthService.getTokenExpiry()).thenReturn(LocalDateTime.of(2025, 2, 9, 6, 0, 0));
+
+        mockMvc.perform(post("/api/auth/callback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"requestToken\":\"test-token\"}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.message").value("Login successful"));
+                .andExpect(jsonPath("$.data.userId").value("XY1234"))
+                .andExpect(jsonPath("$.data.userName").value("Test User"))
+                .andExpect(jsonPath("$.data.sessionExpiresAt").exists());
 
         verify(kiteAuthService).handleCallback("test-token");
+    }
+
+    @Test
+    @DisplayName("POST /api/auth/callback returns 400 when requestToken is missing")
+    void handleCallbackReturnsBadRequestWhenTokenMissing() throws Exception {
+        mockMvc.perform(post("/api/auth/callback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
@@ -75,7 +93,7 @@ class AuthControllerTest {
     }
 
     @Test
-    @DisplayName("GET /api/auth/status returns authenticated status")
+    @DisplayName("GET /api/auth/status returns authenticated status with correct field names")
     void getStatusReturnsAuthenticated() throws Exception {
         when(kiteAuthService.isAuthenticated()).thenReturn(true);
         when(kiteAuthService.getCurrentUserId()).thenReturn("XY1234");
@@ -84,9 +102,10 @@ class AuthControllerTest {
 
         mockMvc.perform(get("/api/auth/status"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.authenticated").value(true))
+                .andExpect(jsonPath("$.data.isAuthenticated").value(true))
                 .andExpect(jsonPath("$.data.userId").value("XY1234"))
-                .andExpect(jsonPath("$.data.userName").value("Test User"));
+                .andExpect(jsonPath("$.data.userName").value("Test User"))
+                .andExpect(jsonPath("$.data.sessionExpiresAt").exists());
     }
 
     @Test
@@ -99,6 +118,16 @@ class AuthControllerTest {
 
         mockMvc.perform(get("/api/auth/status"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.authenticated").value(false));
+                .andExpect(jsonPath("$.data.isAuthenticated").value(false));
+    }
+
+    @Test
+    @DisplayName("POST /api/auth/logout calls service logout")
+    void logoutSucceeds() throws Exception {
+        mockMvc.perform(post("/api/auth/logout"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.message").value("Logged out successfully"));
+
+        verify(kiteAuthService).logout();
     }
 }

@@ -8,8 +8,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
-import org.springframework.web.client.RestClient;
 
 /**
  * Configuration properties and bean definitions for Kite Connect API integration.
@@ -19,9 +17,12 @@ import org.springframework.web.client.RestClient;
  *   <li>A singleton {@link KiteConnect} bean — the Kite SDK client shared across
  *       the entire application. After authentication, the access token is set on this
  *       instance and all services use the same connection.</li>
- *   <li>A {@link RestClient} bean for calling the kite-login sidecar at localhost:3010.</li>
- *   <li>API key, API secret, and sidecar configuration properties.</li>
+ *   <li>API key, API secret, and auto-login configuration properties.</li>
  * </ul>
+ *
+ * <p>Auto-login configuration ({@code kite.auto-login.*}) controls the Playwright-based
+ * automated Kite OAuth flow. When enabled, the system uses headless Chromium + TOTP
+ * to log in automatically on startup, eliminating the need for manual browser login.
  *
  * <p>Per the Kite SDK sample: create one KiteConnect instance, then call
  * {@code setAccessToken()}, {@code setUserId()}, {@code setPublicToken()} after login.
@@ -40,8 +41,8 @@ public class KiteConfig {
     /** Kite Connect API secret (from Zerodha developer console). */
     private String apiSecret;
 
-    /** Sidecar configuration for automated Puppeteer-based OAuth login. */
-    private Sidecar sidecar = new Sidecar();
+    /** Auto-login configuration for Playwright-based automated OAuth login. */
+    private AutoLogin autoLogin = new AutoLogin();
 
     /**
      * Singleton KiteConnect SDK client.
@@ -61,21 +62,6 @@ public class KiteConfig {
         return kiteConnect;
     }
 
-    /**
-     * RestClient configured for the kite-login sidecar HTTP calls.
-     * Used by KiteAuthService for automated OAuth token acquisition.
-     */
-    @Bean
-    public RestClient sidecarRestClient() {
-        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-        requestFactory.setConnectTimeout(sidecar.getConnectTimeout());
-        requestFactory.setReadTimeout(sidecar.getReadTimeout());
-        return RestClient.builder()
-                .baseUrl(sidecar.getUrl())
-                .requestFactory(requestFactory)
-                .build();
-    }
-
     private String maskApiKey(String key) {
         if (key == null || key.length() < 4) {
             return "****";
@@ -83,20 +69,30 @@ public class KiteConfig {
         return key.substring(0, 4) + "****";
     }
 
+    /**
+     * Configuration for automated Kite login via Playwright (headless Chromium) + TOTP.
+     *
+     * <p>When enabled, the system automates the Kite OAuth flow on startup:
+     * navigates to Kite login → enters credentials → generates TOTP → extracts request_token.
+     * This eliminates the need for manual browser-based login.
+     */
     @Getter
     @Setter
-    public static class Sidecar {
+    public static class AutoLogin {
 
-        /** Base URL of the kite-login sidecar. */
-        private String url = "http://localhost:3010";
-
-        /** Whether the sidecar auto-login is enabled on startup. */
+        /** Whether automated login via Playwright is enabled. */
         private boolean enabled = false;
 
-        /** HTTP connect timeout in milliseconds for sidecar calls. */
-        private int connectTimeout = 5000;
+        /** Zerodha user ID (e.g., "AB1234"). */
+        private String userId;
 
-        /** HTTP read timeout in milliseconds for sidecar calls. */
-        private int readTimeout = 30000;
+        /** Zerodha account password. */
+        private String password;
+
+        /** Base32-encoded TOTP secret key for 2FA (from Zerodha's authenticator setup). */
+        private String otpSecret;
+
+        /** Whether to run Chromium in headless mode (true for servers, false for debugging). */
+        private boolean headless = true;
     }
 }
