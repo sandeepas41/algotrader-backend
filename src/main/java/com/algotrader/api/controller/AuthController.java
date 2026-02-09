@@ -1,8 +1,11 @@
 package com.algotrader.api.controller;
 
 import com.algotrader.api.dto.request.AuthCallbackRequest;
+import com.algotrader.api.dto.request.LoginRequest;
 import com.algotrader.api.dto.response.AuthCallbackResponse;
 import com.algotrader.api.dto.response.AuthStatusResponse;
+import com.algotrader.api.dto.response.LoginResponse;
+import com.algotrader.auth.AppAuthService;
 import com.algotrader.broker.KiteAuthService;
 import jakarta.validation.Valid;
 import java.util.Map;
@@ -16,19 +19,22 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * REST controller for Kite Connect authentication endpoints.
+ * REST controller for authentication endpoints.
  *
- * <p>Provides manual login flow (login URL + callback), on-demand re-authentication,
- * session status check, and logout. These endpoints are used by the frontend's broker
- * status widget and as a fallback when the automated sidecar login is unavailable.
+ * <p>Handles two separate auth concerns:
+ * <ul>
+ *   <li><b>App auth</b>: Simple username/password login (admin/admin) that gates frontend access via JWT.</li>
+ *   <li><b>Broker auth</b>: Kite Connect OAuth session for live market data and order execution.</li>
+ * </ul>
  *
  * <p>Endpoints:
  * <ul>
- *   <li>GET  /api/auth/login-url       - Returns the Kite OAuth login URL</li>
- *   <li>POST /api/auth/callback        - Handles the OAuth redirect with request_token</li>
+ *   <li>POST /api/auth/login          - App login (username/password -> JWT)</li>
+ *   <li>GET  /api/auth/login-url      - Returns the Kite OAuth login URL</li>
+ *   <li>POST /api/auth/callback       - Handles the OAuth redirect with request_token</li>
  *   <li>POST /api/auth/re-authenticate - Triggers on-demand re-auth (via sidecar)</li>
- *   <li>GET  /api/auth/status          - Returns current authentication status</li>
- *   <li>POST /api/auth/logout          - Invalidates the Kite session and clears state</li>
+ *   <li>GET  /api/auth/status         - Returns broker authentication status</li>
+ *   <li>POST /api/auth/logout         - Invalidates the Kite session</li>
  * </ul>
  */
 @RestController
@@ -38,9 +44,28 @@ public class AuthController {
     private static final Logger log = LoggerFactory.getLogger(AuthController.class);
 
     private final KiteAuthService kiteAuthService;
+    private final AppAuthService appAuthService;
 
-    public AuthController(KiteAuthService kiteAuthService) {
+    public AuthController(KiteAuthService kiteAuthService, AppAuthService appAuthService) {
         this.kiteAuthService = kiteAuthService;
+        this.appAuthService = appAuthService;
+    }
+
+    /**
+     * Authenticates the user with username/password and returns a JWT token.
+     * This is the app-level gate — separate from Kite broker auth.
+     */
+    @PostMapping("/login")
+    public ResponseEntity<LoginResponse> login(@Valid @RequestBody LoginRequest loginRequest) {
+        String token = appAuthService.authenticate(loginRequest.getUsername(), loginRequest.getPassword());
+
+        LoginResponse loginResponse = LoginResponse.builder()
+                .token(token)
+                .username(loginRequest.getUsername())
+                .expiresAt(appAuthService.getTokenExpiry(token))
+                .build();
+
+        return ResponseEntity.ok(loginResponse);
     }
 
     /**
@@ -86,7 +111,7 @@ public class AuthController {
     }
 
     /**
-     * Returns the current authentication status including user info and session expiry.
+     * Returns the current broker authentication status including user info and session expiry.
      * Used by the frontend dashboard to display broker connection state.
      */
     @GetMapping("/status")
