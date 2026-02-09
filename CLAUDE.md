@@ -23,9 +23,27 @@
 - Use Flyway migrations for all schema changes — never `ddl-auto=update` outside tests
 - PositionService.getPositions() reads from Redis (real-time), never from H2. H2 is for historical queries only.
 
+### Comments
+- **Every class must have a Javadoc comment** explaining its purpose, responsibilities, and how it fits in the system. This is critical for LLM-assisted debugging later.
+- Add `why` comments for non-obvious business logic (e.g., "// Kite tokens expire at 6 AM IST, so TTL must align to next 6 AM" or "// Delta is signed: negative for short positions").
+- Add `context` comments for trading domain concepts that aren't self-evident (e.g., "// STT is charged only on sell-side for options" or "// OI change = today's OI - previous day's OI").
+- Do NOT add comments for self-evident code (getters, simple assignments, standard patterns).
+
 ### Naming
 - Use the class name (starting lowercase) for instance variable names: `OrderService orderService`, `StrategyEngine strategyEngine`. This makes usages searchable by class name.
 - Use simple class names in code. Use import statements with fully qualified names.
+- **Related files must follow consistent naming patterns across layers:**
+  - Domain model: `Order.java` (no suffix)
+  - JPA entity: `OrderEntity.java`
+  - JPA repository: `OrderJpaRepository.java`
+  - Redis repository: `OrderRedisRepository.java`
+  - MapStruct mapper: `OrderMapper.java`
+  - Service: `OrderService.java`
+  - Controller: `OrderController.java`
+  - DTO request: `OrderRequest.java`
+  - DTO response: `OrderResponse.java`
+  - Event: `OrderEvent.java`
+- Enums go in `domain/enums/`, value objects in `domain/vo/`, domain models in `domain/model/`.
 
 ### Mapping
 - Always use MapStruct for conversions between domain models, JPA entities, and DTOs. Never use ModelMapper or manual mapping.

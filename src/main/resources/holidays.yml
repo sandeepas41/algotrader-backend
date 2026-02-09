@@ -1,0 +1,103 @@
+# NSE Trading Calendar - Holiday list
+# Updated annually based on the NSE published holiday schedule.
+# Source: https://www.nseindia.com/resources/exchange-communication-holidays
+trading-calendar:
+  exchange: NSE
+  timezone: Asia/Kolkata
+  holidays:
+    # 2025 NSE Holidays
+    - date: "2025-01-26"
+      name: "Republic Day"
+      type: FULL_HOLIDAY
+    - date: "2025-02-26"
+      name: "Maha Shivaratri"
+      type: FULL_HOLIDAY
+    - date: "2025-03-14"
+      name: "Holi"
+      type: FULL_HOLIDAY
+    - date: "2025-03-31"
+      name: "Id-Ul-Fitr (Ramadan)"
+      type: FULL_HOLIDAY
+    - date: "2025-04-10"
+      name: "Shri Mahavir Jayanti"
+      type: FULL_HOLIDAY
+    - date: "2025-04-14"
+      name: "Dr. Baba Saheb Ambedkar Jayanti"
+      type: FULL_HOLIDAY
+    - date: "2025-04-18"
+      name: "Good Friday"
+      type: FULL_HOLIDAY
+    - date: "2025-05-01"
+      name: "Maharashtra Day"
+      type: FULL_HOLIDAY
+    - date: "2025-08-15"
+      name: "Independence Day"
+      type: FULL_HOLIDAY
+    - date: "2025-08-27"
+      name: "Ganesh Chaturthi"
+      type: FULL_HOLIDAY
+    - date: "2025-10-02"
+      name: "Mahatma Gandhi Jayanti"
+      type: FULL_HOLIDAY
+    - date: "2025-10-21"
+      name: "Diwali (Muhurat Trading)"
+      type: MUHURAT_TRADING
+    - date: "2025-10-22"
+      name: "Diwali Balipratipada"
+      type: FULL_HOLIDAY
+    - date: "2025-11-05"
+      name: "Guru Nanak Jayanti"
+      type: FULL_HOLIDAY
+    - date: "2025-12-25"
+      name: "Christmas"
+      type: FULL_HOLIDAY
+
+    # 2026 NSE Holidays (provisional — update when NSE publishes official list)
+    - date: "2026-01-26"
+      name: "Republic Day"
+      type: FULL_HOLIDAY
+    - date: "2026-03-10"
+      name: "Maha Shivaratri"
+      type: FULL_HOLIDAY
+    - date: "2026-03-20"
+      name: "Id-Ul-Fitr (Ramadan)"
+      type: FULL_HOLIDAY
+    - date: "2026-04-02"
+      name: "Ram Navami"
+      type: FULL_HOLIDAY
+    - date: "2026-04-03"
+      name: "Good Friday"
+      type: FULL_HOLIDAY
+    - date: "2026-04-14"
+      name: "Dr. Baba Saheb Ambedkar Jayanti"
+      type: FULL_HOLIDAY
+    - date: "2026-05-01"
+      name: "Maharashtra Day"
+      type: FULL_HOLIDAY
+    - date: "2026-05-25"
+      name: "Buddha Purnima"
+      type: FULL_HOLIDAY
+    - date: "2026-06-07"
+      name: "Id-Ul-Zuha (Bakri Id)"
+      type: FULL_HOLIDAY
+    - date: "2026-08-15"
+      name: "Independence Day"
+      type: FULL_HOLIDAY
+    - date: "2026-10-02"
+      name: "Mahatma Gandhi Jayanti"
+      type: FULL_HOLIDAY
+    - date: "2026-10-20"
+      name: "Dasara"
+      type: FULL_HOLIDAY
+    - date: "2026-11-09"
+      name: "Diwali (Muhurat Trading)"
+      type: MUHURAT_TRADING
+    - date: "2026-11-10"
+      name: "Diwali Balipratipada"
+      type: FULL_HOLIDAY
+    - date: "2026-11-24"
+      name: "Guru Nanak Jayanti"
+      type: FULL_HOLIDAY
+    - date: "2026-12-25"
+      name: "Christmas"
+      type: FULL_HOLIDAY
