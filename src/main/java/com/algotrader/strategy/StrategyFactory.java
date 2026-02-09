@@ -23,8 +23,6 @@ import com.algotrader.strategy.impl.LongStraddleConfig;
 import com.algotrader.strategy.impl.LongStraddleStrategy;
 import com.algotrader.strategy.impl.NakedOptionConfig;
 import com.algotrader.strategy.impl.NakedOptionStrategy;
-import com.algotrader.strategy.impl.ScalpingConfig;
-import com.algotrader.strategy.impl.ScalpingStrategy;
 import com.algotrader.strategy.impl.StraddleConfig;
 import com.algotrader.strategy.impl.StraddleStrategy;
 import com.algotrader.strategy.impl.StrangleConfig;
@@ -83,7 +81,6 @@ public class StrategyFactory {
             case BEAR_PUT_SPREAD -> new BearPutSpreadStrategy(id, name, asConfig(config, BearPutSpreadConfig.class));
             case CALENDAR_SPREAD -> new CalendarSpreadStrategy(id, name, asConfig(config, CalendarSpreadConfig.class));
             case DIAGONAL_SPREAD -> new DiagonalSpreadStrategy(id, name, asConfig(config, DiagonalSpreadConfig.class));
-            case SCALPING -> new ScalpingStrategy(id, name, asConfig(config, ScalpingConfig.class));
             case CE_BUY, CE_SELL, PE_BUY, PE_SELL ->
                 new NakedOptionStrategy(id, name, type, asConfig(config, NakedOptionConfig.class));
             case LONG_STRADDLE -> new LongStraddleStrategy(id, name, asConfig(config, LongStraddleConfig.class));

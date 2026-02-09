@@ -604,8 +604,8 @@ class PositionAdoptionServiceTest {
     }
 
     private BaseStrategy createBullCallSpreadStrategy() {
-        // Use ScalpingStrategy as a proxy for a CE-only strategy type
-        // since BullCallSpreadStrategy.getType() returns BULL_CALL_SPREAD
+        // Use BullCallSpreadStrategy as a different strategy type
+        // to test cross-strategy position adoption
         com.algotrader.strategy.impl.BullCallSpreadConfig bcsConfig =
                 com.algotrader.strategy.impl.BullCallSpreadConfig.builder()
                         .underlying("NIFTY")

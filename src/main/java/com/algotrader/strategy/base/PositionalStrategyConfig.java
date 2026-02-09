@@ -15,8 +15,8 @@ import lombok.experimental.SuperBuilder;
  * entry premium, and minimum days-to-expiry for time-based exits.
  *
  * <p>Used by: Iron Condor, Straddle, Strangle, Bull Call Spread, Bear Put Spread,
- * and all other positional strategy types. Scalping strategies use their own
- * config (ScalpingConfig) which extends BaseStrategyConfig directly with point-based exits.
+ * and all other positional-only strategy types. Dual-mode strategies (NakedOption,
+ * LongStraddle) extend BaseStrategyConfig directly with both positional and scalping exits.
  *
  * <p>The adjustment cooldown defaults to 5 minutes for positional strategies.
  * This prevents rapid-fire adjustments when a position is oscillating near a threshold.

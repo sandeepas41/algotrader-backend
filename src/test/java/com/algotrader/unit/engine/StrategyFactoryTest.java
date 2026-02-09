@@ -3,7 +3,6 @@ package com.algotrader.unit.engine;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import com.algotrader.domain.enums.OrderSide;
 import com.algotrader.domain.enums.StrategyStatus;
 import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.strategy.StrategyFactory;
@@ -13,8 +12,8 @@ import com.algotrader.strategy.impl.BullCallSpreadConfig;
 import com.algotrader.strategy.impl.BullCallSpreadStrategy;
 import com.algotrader.strategy.impl.IronCondorConfig;
 import com.algotrader.strategy.impl.IronCondorStrategy;
-import com.algotrader.strategy.impl.ScalpingConfig;
-import com.algotrader.strategy.impl.ScalpingStrategy;
+import com.algotrader.strategy.impl.NakedOptionConfig;
+import com.algotrader.strategy.impl.NakedOptionStrategy;
 import com.algotrader.strategy.impl.StraddleConfig;
 import com.algotrader.strategy.impl.StraddleStrategy;
 import java.math.BigDecimal;
@@ -45,7 +44,6 @@ class StrategyFactoryTest {
             StrategyType.BEAR_PUT_SPREAD,
             StrategyType.CALENDAR_SPREAD,
             StrategyType.DIAGONAL_SPREAD,
-            StrategyType.SCALPING,
             StrategyType.CE_BUY,
             StrategyType.CE_SELL,
             StrategyType.PE_BUY,
@@ -172,21 +170,19 @@ class StrategyFactoryTest {
     }
 
     @Nested
-    @DisplayName("Scalping Creation")
-    class ScalpingCreation {
+    @DisplayName("Naked Option Creation")
+    class NakedOptionCreation {
 
-        private ScalpingConfig scalpingConfig;
+        private NakedOptionConfig nakedOptionConfig;
 
         @BeforeEach
         void setUp() {
-            scalpingConfig = ScalpingConfig.builder()
+            nakedOptionConfig = NakedOptionConfig.builder()
                     .underlying("NIFTY")
                     .lots(1)
                     .strikeInterval(BigDecimal.valueOf(50))
                     .autoEntry(true)
-                    .optionType("CE")
-                    .strike(BigDecimal.valueOf(22000))
-                    .side(OrderSide.BUY)
+                    .scalpingMode(true)
                     .targetPoints(BigDecimal.valueOf(20))
                     .stopLossPoints(BigDecimal.valueOf(10))
                     .maxHoldDuration(Duration.ofMinutes(10))
@@ -194,14 +190,14 @@ class StrategyFactoryTest {
         }
 
         @Test
-        @DisplayName("Creates ScalpingStrategy with correct type and status")
-        void createsScalpingStrategy() {
-            BaseStrategy strategy = strategyFactory.create(StrategyType.SCALPING, "NIFTY-Scalp", scalpingConfig);
+        @DisplayName("Creates NakedOptionStrategy for CE_BUY with correct type and status")
+        void createsCeBuyStrategy() {
+            BaseStrategy strategy = strategyFactory.create(StrategyType.CE_BUY, "NIFTY-CeBuy", nakedOptionConfig);
 
-            assertThat(strategy).isInstanceOf(ScalpingStrategy.class);
-            assertThat(strategy.getType()).isEqualTo(StrategyType.SCALPING);
+            assertThat(strategy).isInstanceOf(NakedOptionStrategy.class);
+            assertThat(strategy.getType()).isEqualTo(StrategyType.CE_BUY);
             assertThat(strategy.getStatus()).isEqualTo(StrategyStatus.CREATED);
-            assertThat(strategy.getName()).isEqualTo("NIFTY-Scalp");
+            assertThat(strategy.getName()).isEqualTo("NIFTY-CeBuy");
             assertThat(strategy.getId()).startsWith("STR-");
         }
     }

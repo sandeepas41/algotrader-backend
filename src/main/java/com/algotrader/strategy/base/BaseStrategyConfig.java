@@ -13,7 +13,8 @@ import lombok.experimental.SuperBuilder;
  * <p>Contains the minimum fields every strategy needs: underlying instrument, expiry,
  * lot count, and entry time window. Positional strategies extend this with
  * {@link PositionalStrategyConfig} (target %, stop-loss multiplier, min DTE).
- * Scalping extends this directly with point-based exits (ScalpingConfig, Task 6.6).
+ * Dual-mode strategies (NakedOptionConfig, LongStraddleConfig) extend this directly
+ * with both positional and scalping exit fields, toggled by a scalpingMode flag.
  *
  * <p>Uses {@code @SuperBuilder} so subclasses can chain builder calls:
  * {@code PositionalStrategyConfig.builder().underlying("NIFTY").targetPercent(0.5).build()}.
