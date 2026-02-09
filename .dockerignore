@@ -1,0 +1,25 @@
+# Build artifacts
+target/
+*.jar
+!.mvn/wrapper/*.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Git
+.git/
+.gitignore
+
+# Environment files (secrets)
+.env
+.env.*
+
+# Logs
+*.log
+dev.log
+nohup.out
+
+# Dev scripts
+scripts/
