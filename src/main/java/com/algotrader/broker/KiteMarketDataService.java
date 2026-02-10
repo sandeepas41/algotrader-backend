@@ -215,7 +215,8 @@ public class KiteMarketDataService {
 
     /** Creates a new KiteTicker instance (extracted for testability). */
     KiteTicker createTicker(String accessToken) {
-        return new KiteTicker(kiteConfig.getApiKey(), accessToken);
+        // KiteTicker constructor order: (accessToken, apiKey)
+        return new KiteTicker(accessToken, kiteConfig.getApiKey());
     }
 
     private void setupCallbacks() {
