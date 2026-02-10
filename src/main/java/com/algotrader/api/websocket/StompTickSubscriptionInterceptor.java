@@ -188,6 +188,11 @@ public class StompTickSubscriptionInterceptor implements ChannelInterceptor {
         }
     }
 
+    /** Returns a snapshot of all session→token mappings (for debug endpoint). */
+    public Map<String, Map<String, Long>> getSessionSubscriptions() {
+        return Map.copyOf(sessionSubscriptions);
+    }
+
     /** Builds the subscriber key for InstrumentSubscriptionManager. */
     private String subscriberKey(String sessionId) {
         return "stomp:" + sessionId;
