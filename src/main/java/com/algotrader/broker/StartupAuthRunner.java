@@ -36,14 +36,17 @@ public class StartupAuthRunner implements ApplicationListener<ApplicationReadyEv
     private static final int MAX_RETRIES = 10;
 
     private final KiteAuthService kiteAuthService;
+    private final KiteMarketDataService kiteMarketDataService;
     private final InstrumentService instrumentService;
     private final WatchlistSubscriptionService watchlistSubscriptionService;
 
     public StartupAuthRunner(
             KiteAuthService kiteAuthService,
+            KiteMarketDataService kiteMarketDataService,
             InstrumentService instrumentService,
             WatchlistSubscriptionService watchlistSubscriptionService) {
         this.kiteAuthService = kiteAuthService;
+        this.kiteMarketDataService = kiteMarketDataService;
         this.instrumentService = instrumentService;
         this.watchlistSubscriptionService = watchlistSubscriptionService;
     }
@@ -66,6 +69,7 @@ public class StartupAuthRunner implements ApplicationListener<ApplicationReadyEv
                 kiteAuthService.acquireTokenOnStartup();
                 if (kiteAuthService.isAuthenticated()) {
                     log.info("Kite token acquired successfully on attempt {}", attempt);
+                    connectTicker();
                     loadInstruments();
                 } else {
                     log.warn(
@@ -97,6 +101,19 @@ public class StartupAuthRunner implements ApplicationListener<ApplicationReadyEv
                 "Failed to acquire Kite token after {} attempts. System in degraded mode. "
                         + "Manual login required via /api/auth/login-url",
                 MAX_RETRIES);
+    }
+
+    /**
+     * Connects the Kite WebSocket ticker for real-time market data.
+     * Non-fatal: if connection fails, the ticker will auto-reconnect when subscriptions arrive.
+     */
+    private void connectTicker() {
+        try {
+            kiteMarketDataService.connect(kiteAuthService.getAccessToken());
+            log.info("Kite ticker connection initiated");
+        } catch (Exception e) {
+            log.error("Failed to connect Kite ticker on startup: {}", e.getMessage());
+        }
     }
 
     /**
