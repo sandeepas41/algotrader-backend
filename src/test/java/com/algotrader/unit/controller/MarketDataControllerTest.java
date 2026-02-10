@@ -88,7 +88,7 @@ class MarketDataControllerTest {
                 .exchange("NFO")
                 .build();
 
-        when(instrumentService.searchBySymbol("NIFTY24FEB")).thenReturn(List.of(instrument));
+        when(instrumentService.searchInstruments("NIFTY24FEB", null)).thenReturn(List.of(instrument));
 
         mockMvc.perform(get("/api/market-data/instruments").param("query", "NIFTY24FEB"))
                 .andExpect(status().isOk())

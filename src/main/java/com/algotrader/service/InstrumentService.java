@@ -1,5 +1,7 @@
 package com.algotrader.service;
 
+import com.algotrader.domain.IndexMapping;
+import com.algotrader.domain.enums.InstrumentType;
 import com.algotrader.domain.model.Instrument;
 import com.algotrader.entity.InstrumentEntity;
 import com.algotrader.exception.BrokerException;
@@ -12,10 +14,12 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 import org.json.JSONException;
@@ -28,25 +32,29 @@ import org.springframework.stereotype.Service;
  * Kite API, caching in memory, and providing fast lookups for option chain
  * construction and WebSocket subscriptions.
  *
- * <p>On startup (after token acquisition), checks H2 for today's instruments
- * by download_date. If present, loads from H2 into in-memory cache. If not,
- * downloads from Kite API ({@code kiteConnect.getInstruments("NFO")}), persists
- * to H2 with today's date, and populates the cache.
- *
- * <p>Two in-memory caches provide O(1) lookups:
+ * <p>Downloads instruments from three exchanges daily: NFO (derivatives),
+ * NSE (equities + indices), and BSE (equities). This gives us:
  * <ul>
- *   <li>{@code tokenCache} — keyed by instrument token for tick processing</li>
- *   <li>{@code underlyingCache} — keyed by underlying (e.g., "NIFTY") for
- *       option chain construction, containing only CE/PE instruments</li>
+ *   <li>NFO (~46k): FUT/CE/PE instruments with underlying = root symbol</li>
+ *   <li>NSE (~9k): Equities (name = company display name) + Indices (NIFTY 50, etc.)</li>
+ *   <li>BSE (~12k): Equities (name = company display name)</li>
  * </ul>
  *
- * <p>Instrument data is refreshed daily because Kite publishes new instrument
- * dumps each trading day with updated tokens, lot sizes, and new expiry series.
+ * <p>Four in-memory caches provide O(1) lookups:
+ * <ul>
+ *   <li>{@code tokenCache} — all instruments keyed by token (tick processing)</li>
+ *   <li>{@code underlyingCache} — CE/PE grouped by underlying (option chain construction)</li>
+ *   <li>{@code derivativesCache} — CE/PE/FUT grouped by underlying (explorer chain)</li>
+ *   <li>{@code spotCache} — NSE/BSE equities + indices keyed by underlying symbol (spot lookups)</li>
+ * </ul>
  */
 @Service
 public class InstrumentService {
 
     private static final Logger log = LoggerFactory.getLogger(InstrumentService.class);
+
+    /** Exchanges to download instruments from. */
+    private static final List<String> EXCHANGES = List.of("NFO", "NSE", "BSE");
 
     private final InstrumentJpaRepository instrumentJpaRepository;
     private final InstrumentMapper instrumentMapper;
@@ -55,8 +63,18 @@ public class InstrumentService {
     /** O(1) lookup by instrument token — used during tick processing. */
     private final Map<Long, Instrument> tokenCache = new ConcurrentHashMap<>();
 
-    /** Options grouped by underlying — used for option chain construction. Only CE/PE instruments. */
+    /** Options (CE/PE only) grouped by underlying — used for option chain construction. */
     private final Map<String, List<Instrument>> underlyingCache = new ConcurrentHashMap<>();
+
+    /** All NFO derivatives (CE/PE/FUT) grouped by underlying — used for explorer chain. */
+    private final Map<String, List<Instrument>> derivativesCache = new ConcurrentHashMap<>();
+
+    /**
+     * Spot instruments keyed by underlying symbol. For NSE/BSE equities, key = tradingSymbol
+     * (e.g., "ADANIPORTS"). For F&amp;O indices, key = NFO underlying name (e.g., "NIFTY").
+     * Used for spot price token lookups.
+     */
+    private final Map<String, Instrument> spotCache = new ConcurrentHashMap<>();
 
     public InstrumentService(
             InstrumentJpaRepository instrumentJpaRepository,
@@ -97,6 +115,18 @@ public class InstrumentService {
     }
 
     /**
+     * Returns the spot instrument for a given underlying symbol.
+     * For equities: pass the NSE tradingSymbol (e.g., "ADANIPORTS").
+     * For indices: pass the NFO underlying (e.g., "NIFTY", "BANKNIFTY").
+     *
+     * @param underlying the underlying symbol
+     * @return the spot instrument, or empty if not found
+     */
+    public Optional<Instrument> getSpotInstrument(String underlying) {
+        return Optional.ofNullable(spotCache.get(underlying));
+    }
+
+    /**
      * Returns all option instruments (CE/PE) for a given underlying and expiry date.
      * Used for building the option chain.
      *
@@ -111,13 +141,28 @@ public class InstrumentService {
     }
 
     /**
+     * Returns all NFO derivatives (CE/PE/FUT) for a given underlying and expiry date.
+     * Used by the explorer chain view which includes futures.
+     *
+     * @param underlying the root underlying, e.g., "NIFTY", "BANKNIFTY"
+     * @param expiry the expiry date to filter by
+     * @return list of matching derivative instruments, empty if none found
+     */
+    public List<Instrument> getDerivativesForExpiry(String underlying, LocalDate expiry) {
+        return derivativesCache.getOrDefault(underlying, Collections.emptyList()).stream()
+                .filter(i -> expiry.equals(i.getExpiry()))
+                .toList();
+    }
+
+    /**
      * Returns all distinct expiry dates for a given underlying, sorted ascending.
+     * Includes both option and future expiries.
      *
      * @param underlying the root underlying, e.g., "NIFTY"
      * @return sorted list of expiry dates
      */
     public List<LocalDate> getExpiries(String underlying) {
-        return underlyingCache.getOrDefault(underlying, Collections.emptyList()).stream()
+        return derivativesCache.getOrDefault(underlying, Collections.emptyList()).stream()
                 .map(Instrument::getExpiry)
                 .distinct()
                 .sorted()
@@ -126,6 +171,8 @@ public class InstrumentService {
 
     /**
      * Returns all instruments for a given underlying (all expiries, all types).
+     * Returns CE/PE only (from underlyingCache) for backward compatibility with
+     * option chain service.
      *
      * @param underlying the root underlying
      * @return list of option instruments for the underlying
@@ -135,12 +182,12 @@ public class InstrumentService {
     }
 
     /**
-     * Returns all underlying names that have instruments in the cache.
+     * Returns all underlying names that have NFO derivatives in the cache.
      *
-     * @return set of underlying names (e.g., "NIFTY", "BANKNIFTY")
+     * @return set of underlying names (e.g., "NIFTY", "BANKNIFTY", "RELIANCE")
      */
-    public java.util.Set<String> getAvailableUnderlyings() {
-        return Collections.unmodifiableSet(underlyingCache.keySet());
+    public Set<String> getAvailableUnderlyings() {
+        return Collections.unmodifiableSet(derivativesCache.keySet());
     }
 
     /**
@@ -151,21 +198,48 @@ public class InstrumentService {
     }
 
     /**
-     * Searches instruments by trading symbol prefix (case-insensitive).
+     * Searches instruments by query string (case-insensitive).
+     * Matches against tradingSymbol prefix, name (contains), and underlying (prefix).
      * Scans the token cache; intended for UI search, not for hot-path tick processing.
      *
-     * @param symbolPrefix the prefix to match against tradingSymbol
-     * @return list of matching instruments
+     * @param query the search term
+     * @return list of matching instruments (limited to 50 results)
      */
-    public List<Instrument> searchBySymbol(String symbolPrefix) {
-        String upperPrefix = symbolPrefix.toUpperCase();
+    public List<Instrument> searchInstruments(String query) {
+        String upperQuery = query.toUpperCase();
         return tokenCache.values().stream()
-                .filter(i -> i.getTradingSymbol() != null
-                        && i.getTradingSymbol().toUpperCase().startsWith(upperPrefix))
+                .filter(i -> matchesSearch(i, upperQuery))
+                .limit(50)
+                .toList();
+    }
+
+    /**
+     * Searches instruments by query string with optional exchange filter.
+     *
+     * @param query the search term
+     * @param exchange optional exchange filter (e.g., "NSE", "NFO", "BSE"), null for all
+     * @return list of matching instruments (limited to 50 results)
+     */
+    public List<Instrument> searchInstruments(String query, String exchange) {
+        String upperQuery = query.toUpperCase();
+        return tokenCache.values().stream()
+                .filter(i -> exchange == null || exchange.equalsIgnoreCase(i.getExchange()))
+                .filter(i -> matchesSearch(i, upperQuery))
+                .limit(50)
                 .toList();
     }
 
     // ---- Private helpers ----
+
+    private boolean matchesSearch(Instrument instrument, String upperQuery) {
+        String symbol = instrument.getTradingSymbol();
+        String name = instrument.getName();
+        String underlying = instrument.getUnderlying();
+
+        return (symbol != null && symbol.toUpperCase().startsWith(upperQuery))
+                || (name != null && name.toUpperCase().contains(upperQuery))
+                || (underlying != null && underlying.toUpperCase().startsWith(upperQuery));
+    }
 
     private void loadFromH2(LocalDate downloadDate) {
         List<InstrumentEntity> entities = instrumentJpaRepository.findByDownloadDate(downloadDate);
@@ -176,15 +250,23 @@ public class InstrumentService {
 
     private void downloadAndSave(LocalDate today) {
         try {
-            List<com.zerodhatech.models.Instrument> kiteInstruments = kiteConnect.getInstruments("NFO");
-            log.info("Downloaded {} NFO instruments from Kite API", kiteInstruments.size());
+            List<Instrument> allInstruments = new ArrayList<>();
 
-            List<Instrument> instruments =
-                    kiteInstruments.stream().map(ki -> mapFromKite(ki, today)).toList();
+            for (String exchange : EXCHANGES) {
+                List<com.zerodhatech.models.Instrument> kiteInstruments = kiteConnect.getInstruments(exchange);
+                log.info("Downloaded {} {} instruments from Kite API", kiteInstruments.size(), exchange);
+
+                List<Instrument> instruments = kiteInstruments.stream()
+                        .map(ki -> mapFromKite(ki, today))
+                        .toList();
+                allInstruments.addAll(instruments);
+            }
+
+            log.info("Total instruments downloaded: {}", allInstruments.size());
 
             // Persist to H2 — convert domain -> entity via MapStruct
             List<InstrumentEntity> entities =
-                    instruments.stream().map(instrumentMapper::toEntity).toList();
+                    allInstruments.stream().map(instrumentMapper::toEntity).toList();
 
             // Set downloadDate and createdAt on entities (ignored by MapStruct toEntity)
             LocalDateTime now = LocalDateTime.now();
@@ -198,7 +280,7 @@ public class InstrumentService {
             instrumentJpaRepository.saveAll(entities);
             log.info("Saved {} instruments to H2 for date {}", entities.size(), today);
 
-            populateCaches(instruments);
+            populateCaches(allInstruments);
             log.info("Instruments downloaded, saved, and cached successfully");
         } catch (KiteException | JSONException | IOException e) {
             throw new BrokerException("Failed to download instruments from Kite API: " + e.getMessage(), e);
@@ -206,13 +288,21 @@ public class InstrumentService {
     }
 
     /**
-     * Populates both in-memory caches from a list of domain instruments.
-     * tokenCache: all instruments keyed by token.
-     * underlyingCache: only CE/PE instruments grouped by underlying (name field).
+     * Populates all four in-memory caches from a list of domain instruments.
+     *
+     * <ul>
+     *   <li>{@code tokenCache}: all instruments keyed by token</li>
+     *   <li>{@code underlyingCache}: NFO CE/PE grouped by underlying</li>
+     *   <li>{@code derivativesCache}: NFO CE/PE/FUT grouped by underlying</li>
+     *   <li>{@code spotCache}: NSE/BSE equities keyed by underlying symbol,
+     *       indices keyed by NFO underlying name via {@link IndexMapping}</li>
+     * </ul>
      */
     private void populateCaches(List<Instrument> instruments) {
         tokenCache.clear();
         underlyingCache.clear();
+        derivativesCache.clear();
+        spotCache.clear();
 
         for (Instrument instrument : instruments) {
             if (instrument.getToken() != null) {
@@ -220,43 +310,76 @@ public class InstrumentService {
             }
         }
 
-        // Group options (CE/PE) by underlying for option chain construction
+        // Group CE/PE by underlying for option chain construction
         Map<String, List<Instrument>> optionsByUnderlying = instruments.stream()
-                .filter(i -> i.getType() != null
-                        && ("CE".equals(i.getType().name())
-                                || "PE".equals(i.getType().name())))
+                .filter(i ->
+                        i.getType() != null && (InstrumentType.CE == i.getType() || InstrumentType.PE == i.getType()))
                 .filter(i -> i.getUnderlying() != null)
                 .collect(Collectors.groupingBy(Instrument::getUnderlying));
-
         underlyingCache.putAll(optionsByUnderlying);
 
+        // Group CE/PE/FUT by underlying for explorer chain
+        Map<String, List<Instrument>> derivativesByUnderlying = instruments.stream()
+                .filter(i -> i.getType() != null
+                        && (InstrumentType.CE == i.getType()
+                                || InstrumentType.PE == i.getType()
+                                || InstrumentType.FUT == i.getType()))
+                .filter(i -> i.getUnderlying() != null)
+                .collect(Collectors.groupingBy(Instrument::getUnderlying));
+        derivativesCache.putAll(derivativesByUnderlying);
+
+        // Populate spot cache: NSE/BSE equities + F&O-tradeable indices
+        for (Instrument instrument : instruments) {
+            if (instrument.getType() != InstrumentType.EQ) {
+                continue;
+            }
+            String segment = instrument.getSegment();
+            if ("INDICES".equals(segment)) {
+                // For indices, key by NFO underlying name (e.g., "NIFTY" for "NIFTY 50")
+                String nfoUnderlying = IndexMapping.toNfoUnderlying(instrument.getTradingSymbol());
+                if (nfoUnderlying != null) {
+                    spotCache.put(nfoUnderlying, instrument);
+                }
+            } else if ("NSE".equals(segment) || "BSE".equals(segment)) {
+                // For equities, key by tradingSymbol (e.g., "ADANIPORTS")
+                // Prefer NSE over BSE if both exist
+                if (!"BSE".equals(segment) || !spotCache.containsKey(instrument.getTradingSymbol())) {
+                    spotCache.put(instrument.getTradingSymbol(), instrument);
+                }
+            }
+        }
+
         log.info(
-                "Cache populated: {} total instruments, {} underlyings with options",
+                "Cache populated: {} total instruments, {} underlyings with options, "
+                        + "{} underlyings with derivatives, {} spot instruments",
                 tokenCache.size(),
-                underlyingCache.size());
+                underlyingCache.size(),
+                derivativesCache.size(),
+                spotCache.size());
     }
 
     /**
-     * Maps a Kite SDK Instrument to our domain model.
+     * Maps a Kite SDK Instrument to our domain model with exchange-aware field semantics.
      *
-     * <p>Key field mappings from Kite SDK:
+     * <p>Field mapping differs by exchange:
      * <ul>
-     *   <li>{@code instrument_token} (long) -> {@code token} (Long)</li>
-     *   <li>{@code tradingsymbol} (String, no underscore) -> {@code tradingSymbol}</li>
-     *   <li>{@code name} (String) -> {@code underlying} (for NFO, name = underlying e.g., "NIFTY")</li>
-     *   <li>{@code strike} (String!) -> {@code strike} (BigDecimal, parsed)</li>
-     *   <li>{@code expiry} (java.util.Date) -> {@code expiry} (LocalDate, converted)</li>
-     *   <li>{@code tick_size} (double) -> {@code tickSize} (BigDecimal)</li>
-     *   <li>{@code instrument_type} (String) -> {@code type} (InstrumentType enum, null if unknown)</li>
+     *   <li><b>NFO</b>: name = kite.name (= underlying ticker, e.g., "ADANIPORTS"),
+     *       underlying = kite.name</li>
+     *   <li><b>NSE/BSE equities</b>: name = kite.name (display name, e.g., "ADANI PORT &amp; SEZ"),
+     *       underlying = kite.tradingsymbol (ticker, e.g., "ADANIPORTS")</li>
+     *   <li><b>NSE INDICES</b>: name = kite.name (e.g., "NIFTY 50"),
+     *       underlying = NFO name via {@link IndexMapping} (e.g., "NIFTY"), null if not F&amp;O index</li>
      * </ul>
      */
     private Instrument mapFromKite(com.zerodhatech.models.Instrument kiteInstrument, LocalDate downloadDate) {
+        String name = kiteInstrument.name;
+        String underlying = resolveUnderlying(kiteInstrument);
+
         return Instrument.builder()
                 .token(kiteInstrument.instrument_token)
                 .tradingSymbol(kiteInstrument.tradingsymbol)
-                .name(kiteInstrument.name)
-                // For NFO instruments, Kite's "name" field is the underlying (e.g., "NIFTY")
-                .underlying(kiteInstrument.name)
+                .name(name)
+                .underlying(underlying)
                 .exchange(kiteInstrument.exchange)
                 .segment(kiteInstrument.segment)
                 .type(parseInstrumentType(kiteInstrument.instrument_type))
@@ -269,15 +392,39 @@ public class InstrumentService {
     }
 
     /**
+     * Resolves the underlying symbol based on exchange and segment.
+     *
+     * <p>For NFO: underlying = kite.name (e.g., "NIFTY", "ADANIPORTS").
+     * For NSE/BSE equities: underlying = kite.tradingsymbol (the ticker).
+     * For NSE INDICES: underlying = NFO name via IndexMapping, or null if not F&amp;O.
+     */
+    private String resolveUnderlying(com.zerodhatech.models.Instrument ki) {
+        String segment = ki.segment;
+
+        // NFO derivatives: name IS the underlying symbol
+        if (segment != null && segment.startsWith("NFO")) {
+            return ki.name;
+        }
+
+        // NSE/BSE INDICES: map to NFO underlying via IndexMapping
+        if ("INDICES".equals(segment)) {
+            return IndexMapping.toNfoUnderlying(ki.tradingsymbol);
+        }
+
+        // NSE/BSE equities: tradingsymbol IS the underlying (ticker)
+        return ki.tradingsymbol;
+    }
+
+    /**
      * Parses the Kite instrument_type string to our enum.
      * Returns null for unrecognized types (Kite has types beyond our enum).
      */
-    private com.algotrader.domain.enums.InstrumentType parseInstrumentType(String kiteType) {
+    private InstrumentType parseInstrumentType(String kiteType) {
         if (kiteType == null || kiteType.isBlank()) {
             return null;
         }
         try {
-            return com.algotrader.domain.enums.InstrumentType.valueOf(kiteType);
+            return InstrumentType.valueOf(kiteType);
         } catch (IllegalArgumentException e) {
             return null;
         }

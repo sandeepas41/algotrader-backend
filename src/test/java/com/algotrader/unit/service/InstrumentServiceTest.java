@@ -89,10 +89,12 @@ class InstrumentServiceTest {
     void downloadFromKiteWhenH2Empty() throws Throwable {
         when(instrumentJpaRepository.existsByDownloadDate(TODAY)).thenReturn(false);
 
-        // Kite SDK returns its own Instrument model
+        // Kite SDK returns instruments per exchange
         com.zerodhatech.models.Instrument kiteInst =
                 buildKiteInstrument(2001L, "BANKNIFTY24FEB48000PE", "BANKNIFTY", "PE", "48000.0", "NFO", "NFO-OPT");
         when(kiteConnect.getInstruments("NFO")).thenReturn(List.of(kiteInst));
+        when(kiteConnect.getInstruments("NSE")).thenReturn(List.of());
+        when(kiteConnect.getInstruments("BSE")).thenReturn(List.of());
 
         // MapStruct toEntity is called during save
         InstrumentEntity entity = buildEntity(2001L, "BANKNIFTY24FEB48000PE", "BANKNIFTY", "PE", "48000.0");
@@ -100,8 +102,10 @@ class InstrumentServiceTest {
 
         instrumentService.loadInstrumentsOnStartup();
 
-        // Should call Kite API
+        // Should call Kite API for all 3 exchanges
         verify(kiteConnect).getInstruments("NFO");
+        verify(kiteConnect).getInstruments("NSE");
+        verify(kiteConnect).getInstruments("BSE");
 
         // Should save to H2
         verify(instrumentJpaRepository).saveAll(anyList());
@@ -117,6 +121,7 @@ class InstrumentServiceTest {
     @DisplayName("loadInstrumentsOnStartup: throws BrokerException when Kite API fails")
     void throwsWhenKiteApiFails() throws Throwable {
         when(instrumentJpaRepository.existsByDownloadDate(TODAY)).thenReturn(false);
+        // First exchange call (NFO) fails
         when(kiteConnect.getInstruments("NFO")).thenThrow(new KiteException("API error"));
 
         assertThatThrownBy(() -> instrumentService.loadInstrumentsOnStartup())
@@ -196,8 +201,8 @@ class InstrumentServiceTest {
     }
 
     @Test
-    @DisplayName("searchBySymbol: finds instruments by symbol prefix")
-    void searchBySymbolPrefix() {
+    @DisplayName("searchInstruments: finds instruments by symbol prefix")
+    void searchInstrumentsPrefix() {
         when(instrumentJpaRepository.existsByDownloadDate(TODAY)).thenReturn(true);
 
         InstrumentEntity e1 = buildEntity(5001L, "NIFTY24FEB22000CE", "NIFTY", "CE", "22000.0");
@@ -213,16 +218,16 @@ class InstrumentServiceTest {
         instrumentService.loadInstrumentsOnStartup();
 
         // Search "NIFTY" should return NIFTY instruments only (not BANKNIFTY)
-        List<Instrument> results = instrumentService.searchBySymbol("NIFTY24");
+        List<Instrument> results = instrumentService.searchInstruments("NIFTY24");
         assertThat(results).hasSize(2);
         assertThat(results).allMatch(i -> i.getTradingSymbol().startsWith("NIFTY24"));
 
         // Search "BANK" should return BANKNIFTY
-        List<Instrument> bankResults = instrumentService.searchBySymbol("BANK");
+        List<Instrument> bankResults = instrumentService.searchInstruments("BANK");
         assertThat(bankResults).hasSize(1);
 
         // Case-insensitive
-        List<Instrument> lowerResults = instrumentService.searchBySymbol("nifty24");
+        List<Instrument> lowerResults = instrumentService.searchInstruments("nifty24");
         assertThat(lowerResults).hasSize(2);
     }
 

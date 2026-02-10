@@ -51,11 +51,13 @@ public class MarketDataController {
     }
 
     /**
-     * Search instruments by trading symbol prefix (e.g., "NIFTY24FEB").
+     * Search instruments by query (matches tradingSymbol prefix, name contains, underlying prefix).
+     * Optional exchange filter (e.g., "NSE", "NFO", "BSE").
      */
     @GetMapping("/instruments")
-    public ResponseEntity<List<Instrument>> searchInstruments(@RequestParam String query) {
-        List<Instrument> instruments = instrumentService.searchBySymbol(query);
+    public ResponseEntity<List<Instrument>> searchInstruments(
+            @RequestParam String query, @RequestParam(required = false) String exchange) {
+        List<Instrument> instruments = instrumentService.searchInstruments(query, exchange);
         return ResponseEntity.ok(instruments);
     }
 
