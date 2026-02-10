@@ -13,6 +13,9 @@
 
 set -e
 
+# Java 24 required for this project
+export JAVA_HOME="/Users/sandeep/.sdkman/candidates/java/24-tem"
+
 # Colors for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
