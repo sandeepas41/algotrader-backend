@@ -3,6 +3,8 @@ package com.algotrader.unit.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -130,6 +132,31 @@ class WatchlistConfigServiceTest {
         assertThatThrownBy(() -> watchlistConfigService.delete(99L))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("not found");
+    }
+
+    @Test
+    @DisplayName("seedDefaults: seeds 3 defaults when table is empty")
+    void seedDefaultsSeedsWhenEmpty() {
+        when(watchlistConfigJpaRepository.count()).thenReturn(0L);
+        when(watchlistConfigMapper.toEntity(any(WatchlistConfig.class)))
+                .thenReturn(buildEntity(null, "NIFTY", 10, ExpiryType.NEAREST_WEEKLY, true));
+        when(watchlistConfigJpaRepository.save(any(WatchlistConfigEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        watchlistConfigService.seedDefaults();
+
+        // Should save exactly 3 configs: NIFTY, BANKNIFTY, SENSEX
+        verify(watchlistConfigJpaRepository, times(3)).save(any(WatchlistConfigEntity.class));
+    }
+
+    @Test
+    @DisplayName("seedDefaults: skips when configs already exist")
+    void seedDefaultsSkipsWhenNotEmpty() {
+        when(watchlistConfigJpaRepository.count()).thenReturn(2L);
+
+        watchlistConfigService.seedDefaults();
+
+        verify(watchlistConfigJpaRepository, never()).save(any());
     }
 
     // ---- Helpers ----

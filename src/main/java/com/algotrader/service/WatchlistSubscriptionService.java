@@ -68,6 +68,9 @@ public class WatchlistSubscriptionService {
      * when the user opens the instrument explorer or option chain page.
      */
     public void subscribeAll() {
+        // Seed defaults (NIFTY, BANKNIFTY, SENSEX) if table is empty — idempotent
+        watchlistConfigService.seedDefaults();
+
         List<WatchlistConfig> configs = watchlistConfigService.getEnabledConfigs();
         if (configs.isEmpty()) {
             log.info("No enabled watchlist configs found, skipping auto-subscription");

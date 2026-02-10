@@ -9,14 +9,17 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.algotrader.api.controller.MarketDataController;
 import com.algotrader.api.dto.response.ChainExplorerResponse;
+import com.algotrader.api.dto.response.InstrumentDumpResponse;
 import com.algotrader.config.ApiResponseAdvice;
 import com.algotrader.domain.enums.InstrumentType;
 import com.algotrader.domain.model.Instrument;
 import com.algotrader.domain.model.OptionChain;
+import com.algotrader.mapper.InstrumentDumpMapper;
 import com.algotrader.service.InstrumentService;
 import com.algotrader.service.OptionChainService;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -44,9 +47,13 @@ class MarketDataControllerTest {
     @Mock
     private InstrumentService instrumentService;
 
+    @Mock
+    private InstrumentDumpMapper instrumentDumpMapper;
+
     @BeforeEach
     void setUp() {
-        MarketDataController controller = new MarketDataController(optionChainService, instrumentService);
+        MarketDataController controller =
+                new MarketDataController(optionChainService, instrumentService, instrumentDumpMapper);
 
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new ApiResponseAdvice())
@@ -190,5 +197,48 @@ class MarketDataControllerTest {
                 .andExpect(jsonPath("$.data.options[0].strike").value(22000))
                 .andExpect(jsonPath("$.data.options[0].call.token").value(9002))
                 .andExpect(jsonPath("$.data.options[0].put.token").value(9003));
+    }
+
+    @Test
+    @DisplayName("GET /api/market-data/instruments/dump returns all instruments with correct field names")
+    void getInstrumentDumpReturnsEnvelope() throws Exception {
+        Instrument nifty = Instrument.builder()
+                .token(256265L)
+                .tradingSymbol("NIFTY 50")
+                .name("NIFTY 50")
+                .underlying("NIFTY")
+                .exchange("NSE")
+                .segment("INDICES")
+                .type(InstrumentType.EQ)
+                .lotSize(1)
+                .tickSize(BigDecimal.valueOf(0.05))
+                .downloadDate(LocalDate.of(2026, 2, 10))
+                .build();
+
+        InstrumentDumpResponse response = InstrumentDumpResponse.builder()
+                .instrumentToken(256265L)
+                .tradingSymbol("NIFTY 50")
+                .name("NIFTY 50")
+                .underlying("NIFTY")
+                .exchange("NSE")
+                .segment("INDICES")
+                .instrumentType("EQ")
+                .lotSize(1)
+                .tickSize(0.05)
+                .build();
+
+        Collection<Instrument> instruments = List.of(nifty);
+        when(instrumentService.getAllCachedInstruments()).thenReturn(instruments);
+        when(instrumentService.getDownloadDate()).thenReturn(LocalDate.of(2026, 2, 10));
+        when(instrumentDumpMapper.toResponseList(any())).thenReturn(List.of(response));
+
+        mockMvc.perform(get("/api/market-data/instruments/dump"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.downloadDate").value("2026-02-10"))
+                .andExpect(jsonPath("$.data.instruments").isArray())
+                .andExpect(jsonPath("$.data.instruments[0].instrumentToken").value(256265))
+                .andExpect(jsonPath("$.data.instruments[0].tradingSymbol").value("NIFTY 50"))
+                .andExpect(jsonPath("$.data.instruments[0].instrumentType").value("EQ"))
+                .andExpect(jsonPath("$.data.instruments[0].exchange").value("NSE"));
     }
 }

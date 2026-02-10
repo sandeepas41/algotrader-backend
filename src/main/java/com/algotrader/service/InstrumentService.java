@@ -16,6 +16,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
@@ -298,6 +299,29 @@ public class InstrumentService {
      */
     public int getCachedInstrumentCount() {
         return tokenCache.size();
+    }
+
+    /**
+     * Returns all instruments from the in-memory cache. Used by the bulk dump endpoint
+     * to serve the full instruments table to the FE for IndexedDB caching.
+     *
+     * @return unmodifiable view of all cached instruments
+     */
+    public Collection<Instrument> getAllCachedInstruments() {
+        return Collections.unmodifiableCollection(tokenCache.values());
+    }
+
+    /**
+     * Returns the download date of the currently cached instruments.
+     * All instruments share the same download date (loaded daily).
+     *
+     * @return the download date, or null if cache is empty
+     */
+    public LocalDate getDownloadDate() {
+        return tokenCache.values().stream()
+                .map(Instrument::getDownloadDate)
+                .findFirst()
+                .orElse(null);
     }
 
     /**

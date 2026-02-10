@@ -1,11 +1,15 @@
 package com.algotrader.api.controller;
 
 import com.algotrader.api.dto.response.ChainExplorerResponse;
+import com.algotrader.api.dto.response.InstrumentDumpEnvelope;
+import com.algotrader.api.dto.response.InstrumentDumpResponse;
 import com.algotrader.domain.model.Instrument;
 import com.algotrader.domain.model.OptionChain;
+import com.algotrader.mapper.InstrumentDumpMapper;
 import com.algotrader.service.InstrumentService;
 import com.algotrader.service.OptionChainService;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -27,6 +31,7 @@ import org.springframework.web.bind.annotation.RestController;
  *   <li>GET /api/market-data/expiries/{underlying} -- available expiry dates</li>
  *   <li>GET /api/market-data/underlyings -- available underlying symbols</li>
  *   <li>GET /api/market-data/chain -- chain explorer (FUT + option strikes) for underlying + expiry</li>
+ *   <li>GET /api/market-data/instruments/dump -- bulk dump of all instruments for FE IndexedDB</li>
  * </ul>
  */
 @RestController
@@ -35,10 +40,15 @@ public class MarketDataController {
 
     private final OptionChainService optionChainService;
     private final InstrumentService instrumentService;
+    private final InstrumentDumpMapper instrumentDumpMapper;
 
-    public MarketDataController(OptionChainService optionChainService, InstrumentService instrumentService) {
+    public MarketDataController(
+            OptionChainService optionChainService,
+            InstrumentService instrumentService,
+            InstrumentDumpMapper instrumentDumpMapper) {
         this.optionChainService = optionChainService;
         this.instrumentService = instrumentService;
+        this.instrumentDumpMapper = instrumentDumpMapper;
     }
 
     /**
@@ -102,6 +112,30 @@ public class MarketDataController {
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate expiry) {
         ChainExplorerResponse chain = instrumentService.buildChainExplorer(underlying, expiry);
         return ResponseEntity.ok(chain);
+    }
+
+    /**
+     * Bulk dump of all cached instruments for FE IndexedDB population.
+     *
+     * <p>Serializes all ~68k instruments from the in-memory tokenCache with field names
+     * mapped to FE conventions (token → instrumentToken, type → instrumentType, etc.).
+     * The FE calls this once per trading day on first login to populate its local IndexedDB cache.
+     *
+     * <p>Response is ~14 MB uncompressed, ~2-3 MB gzipped (server compression enabled).
+     */
+    @GetMapping("/instruments/dump")
+    public ResponseEntity<InstrumentDumpEnvelope> getInstrumentDump() {
+        List<InstrumentDumpResponse> responses =
+                instrumentDumpMapper.toResponseList(new ArrayList<>(instrumentService.getAllCachedInstruments()));
+
+        LocalDate downloadDate = instrumentService.getDownloadDate();
+
+        InstrumentDumpEnvelope envelope = InstrumentDumpEnvelope.builder()
+                .instruments(responses)
+                .downloadDate(downloadDate != null ? downloadDate.toString() : null)
+                .build();
+
+        return ResponseEntity.ok(envelope);
     }
 
     /**

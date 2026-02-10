@@ -1,5 +1,6 @@
 package com.algotrader.service;
 
+import com.algotrader.domain.enums.ExpiryType;
 import com.algotrader.domain.model.WatchlistConfig;
 import com.algotrader.entity.WatchlistConfigEntity;
 import com.algotrader.mapper.WatchlistConfigMapper;
@@ -123,5 +124,54 @@ public class WatchlistConfigService {
         }
         watchlistConfigJpaRepository.deleteById(id);
         log.info("Watchlist config deleted: id={}", id);
+    }
+
+    /**
+     * Seeds default watchlist configs if the table is empty. Called on startup
+     * before auto-subscription to ensure common underlyings are pre-configured.
+     *
+     * <p>Defaults: NIFTY (weekly, ±10), BANKNIFTY (weekly, ±10), SENSEX (monthly, ±10).
+     * Idempotent — does nothing if any configs already exist.
+     */
+    public void seedDefaults() {
+        if (watchlistConfigJpaRepository.count() > 0) {
+            log.debug("Watchlist configs already exist, skipping seed");
+            return;
+        }
+
+        log.info("Seeding default watchlist configs: NIFTY, BANKNIFTY, SENSEX");
+
+        List<WatchlistConfig> defaults = List.of(
+                WatchlistConfig.builder()
+                        .underlying("NIFTY")
+                        .strikesFromAtm(10)
+                        .expiryType(ExpiryType.NEAREST_WEEKLY)
+                        .enabled(true)
+                        .build(),
+                WatchlistConfig.builder()
+                        .underlying("BANKNIFTY")
+                        .strikesFromAtm(10)
+                        .expiryType(ExpiryType.NEAREST_WEEKLY)
+                        .enabled(true)
+                        .build(),
+                WatchlistConfig.builder()
+                        .underlying("SENSEX")
+                        .strikesFromAtm(10)
+                        .expiryType(ExpiryType.NEAREST_MONTHLY)
+                        .enabled(true)
+                        .build());
+
+        LocalDateTime now = LocalDateTime.now();
+        for (WatchlistConfig config : defaults) {
+            config.setCreatedAt(now);
+            config.setUpdatedAt(now);
+
+            WatchlistConfigEntity entity = watchlistConfigMapper.toEntity(config);
+            entity.setCreatedAt(now);
+            entity.setUpdatedAt(now);
+            watchlistConfigJpaRepository.save(entity);
+        }
+
+        log.info("Seeded {} default watchlist configs", defaults.size());
     }
 }
