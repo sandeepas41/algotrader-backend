@@ -193,6 +193,8 @@ public class InstrumentService {
                 e.setCreatedAt(now);
             });
 
+            // Truncate old data before saving — only today's instruments are needed
+            instrumentJpaRepository.deleteAllInBatch();
             instrumentJpaRepository.saveAll(entities);
             log.info("Saved {} instruments to H2 for date {}", entities.size(), today);
 
