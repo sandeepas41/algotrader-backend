@@ -17,6 +17,7 @@ import com.algotrader.domain.model.OptionChain;
 import com.algotrader.mapper.InstrumentDumpMapper;
 import com.algotrader.service.InstrumentService;
 import com.algotrader.service.OptionChainService;
+import com.algotrader.service.QuoteService;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Collection;
@@ -50,10 +51,13 @@ class MarketDataControllerTest {
     @Mock
     private InstrumentDumpMapper instrumentDumpMapper;
 
+    @Mock
+    private QuoteService quoteService;
+
     @BeforeEach
     void setUp() {
         MarketDataController controller =
-                new MarketDataController(optionChainService, instrumentService, instrumentDumpMapper);
+                new MarketDataController(optionChainService, instrumentService, instrumentDumpMapper, quoteService);
 
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new ApiResponseAdvice())

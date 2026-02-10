@@ -1,13 +1,17 @@
 package com.algotrader.api.controller;
 
+import com.algotrader.api.dto.request.QuoteRequest;
 import com.algotrader.api.dto.response.ChainExplorerResponse;
 import com.algotrader.api.dto.response.InstrumentDumpEnvelope;
 import com.algotrader.api.dto.response.InstrumentDumpResponse;
 import com.algotrader.domain.model.Instrument;
 import com.algotrader.domain.model.OptionChain;
+import com.algotrader.domain.model.Tick;
 import com.algotrader.mapper.InstrumentDumpMapper;
 import com.algotrader.service.InstrumentService;
 import com.algotrader.service.OptionChainService;
+import com.algotrader.service.QuoteService;
+import jakarta.validation.Valid;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -16,6 +20,8 @@ import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -32,6 +38,7 @@ import org.springframework.web.bind.annotation.RestController;
  *   <li>GET /api/market-data/underlyings -- available underlying symbols</li>
  *   <li>GET /api/market-data/chain -- chain explorer (FUT + option strikes) for underlying + expiry</li>
  *   <li>GET /api/market-data/instruments/dump -- bulk dump of all instruments for FE IndexedDB</li>
+ *   <li>POST /api/market-data/quotes -- batch quotes for initial LTP seeding</li>
  * </ul>
  */
 @RestController
@@ -41,14 +48,17 @@ public class MarketDataController {
     private final OptionChainService optionChainService;
     private final InstrumentService instrumentService;
     private final InstrumentDumpMapper instrumentDumpMapper;
+    private final QuoteService quoteService;
 
     public MarketDataController(
             OptionChainService optionChainService,
             InstrumentService instrumentService,
-            InstrumentDumpMapper instrumentDumpMapper) {
+            InstrumentDumpMapper instrumentDumpMapper,
+            QuoteService quoteService) {
         this.optionChainService = optionChainService;
         this.instrumentService = instrumentService;
         this.instrumentDumpMapper = instrumentDumpMapper;
+        this.quoteService = quoteService;
     }
 
     /**
@@ -145,5 +155,15 @@ public class MarketDataController {
     public ResponseEntity<List<Instrument>> getInstrumentsByUnderlying(@PathVariable String underlying) {
         List<Instrument> instruments = instrumentService.getInstrumentsByUnderlying(underlying);
         return ResponseEntity.ok(instruments);
+    }
+
+    /**
+     * Fetches live quotes for a batch of instrument tokens.
+     * Used by FE to seed initial LTP data on page load before WebSocket ticks arrive.
+     */
+    @PostMapping("/quotes")
+    public ResponseEntity<List<Tick>> getQuotes(@RequestBody @Valid QuoteRequest quoteRequest) {
+        List<Tick> quotes = quoteService.getQuotes(quoteRequest.getInstrumentTokens());
+        return ResponseEntity.ok(quotes);
     }
 }
