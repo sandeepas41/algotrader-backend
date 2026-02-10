@@ -4,30 +4,35 @@ import java.util.Collections;
 import java.util.Map;
 
 /**
- * Static mapping between NSE index trading symbols and their NFO underlying names.
+ * Static mapping between index trading symbols and their F&amp;O underlying names.
  *
  * <p>NSE indices use display names with spaces (e.g., "NIFTY 50", "NIFTY BANK"),
  * while NFO derivatives use compact symbols (e.g., "NIFTY", "BANKNIFTY").
- * This mapping enables linking an NSE index spot instrument to its NFO derivatives.
+ * BSE indices like SENSEX trade derivatives on BFO.
+ * This mapping enables linking index spot instruments to their F&amp;O derivatives.
  *
- * <p>Only F&amp;O-tradeable indices are included (those that have FUT/CE/PE on NFO).
+ * <p>Only F&amp;O-tradeable indices are included (those that have FUT/CE/PE on NFO or BFO).
  */
 public final class IndexMapping {
 
     /**
-     * Maps NSE index tradingSymbol → NFO underlying name.
-     * E.g., "NIFTY 50" → "NIFTY", "NIFTY BANK" → "BANKNIFTY".
+     * Maps index tradingSymbol → F&amp;O underlying name.
+     * Covers both NSE indices (→ NFO) and BSE indices (→ BFO).
+     * E.g., "NIFTY 50" → "NIFTY", "SENSEX" → "SENSEX".
      */
     public static final Map<String, String> NSE_TO_NFO = Map.of(
             "NIFTY 50", "NIFTY",
             "NIFTY BANK", "BANKNIFTY",
             "NIFTY FIN SERVICE", "FINNIFTY",
             "NIFTY MID SELECT", "MIDCPNIFTY",
-            "NIFTY NEXT 50", "NIFTYNXT50");
+            "NIFTY NEXT 50", "NIFTYNXT50",
+            // BSE indices → BFO underlying names
+            "SENSEX", "SENSEX",
+            "BANKEX", "BANKEX");
 
     /**
-     * Reverse map: NFO underlying name → NSE index tradingSymbol.
-     * E.g., "NIFTY" → "NIFTY 50", "BANKNIFTY" → "NIFTY BANK".
+     * Reverse map: F&amp;O underlying name → index tradingSymbol.
+     * E.g., "NIFTY" → "NIFTY 50", "SENSEX" → "SENSEX".
      */
     public static final Map<String, String> NFO_TO_NSE;
 

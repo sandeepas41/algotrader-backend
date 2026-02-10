@@ -57,8 +57,8 @@ public class InstrumentService {
 
     private static final Logger log = LoggerFactory.getLogger(InstrumentService.class);
 
-    /** Exchanges to download instruments from. */
-    private static final List<String> EXCHANGES = List.of("NFO", "NSE", "BSE");
+    /** Exchanges to download instruments from (NSE/NFO + BSE/BFO). */
+    private static final List<String> EXCHANGES = List.of("NFO", "NSE", "BSE", "BFO");
 
     private final InstrumentJpaRepository instrumentJpaRepository;
     private final InstrumentMapper instrumentMapper;
@@ -70,7 +70,7 @@ public class InstrumentService {
     /** Options (CE/PE only) grouped by underlying — used for option chain construction. */
     private final Map<String, List<Instrument>> underlyingCache = new ConcurrentHashMap<>();
 
-    /** All NFO derivatives (CE/PE/FUT) grouped by underlying — used for explorer chain. */
+    /** All derivatives (CE/PE/FUT from NFO + BFO) grouped by underlying — used for explorer chain. */
     private final Map<String, List<Instrument>> derivativesCache = new ConcurrentHashMap<>();
 
     /**
@@ -521,19 +521,19 @@ public class InstrumentService {
     /**
      * Resolves the underlying symbol based on exchange and segment.
      *
-     * <p>For NFO: underlying = kite.name (e.g., "NIFTY", "ADANIPORTS").
+     * <p>For NFO/BFO derivatives: underlying = kite.name (e.g., "NIFTY", "SENSEX").
      * For NSE/BSE equities: underlying = kite.tradingsymbol (the ticker).
-     * For NSE INDICES: underlying = NFO name via IndexMapping, or null if not F&amp;O.
+     * For INDICES: underlying = F&amp;O name via IndexMapping, or null if not F&amp;O.
      */
     private String resolveUnderlying(com.zerodhatech.models.Instrument ki) {
         String segment = ki.segment;
 
-        // NFO derivatives: name IS the underlying symbol
-        if (segment != null && segment.startsWith("NFO")) {
+        // NFO/BFO derivatives: name IS the underlying symbol
+        if (segment != null && (segment.startsWith("NFO") || segment.startsWith("BFO"))) {
             return ki.name;
         }
 
-        // NSE/BSE INDICES: map to NFO underlying via IndexMapping
+        // NSE/BSE INDICES: map to F&O underlying via IndexMapping
         if ("INDICES".equals(segment)) {
             return IndexMapping.toNfoUnderlying(ki.tradingsymbol);
         }
