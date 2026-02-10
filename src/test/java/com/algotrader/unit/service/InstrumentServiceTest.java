@@ -8,6 +8,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.algotrader.api.dto.response.ChainExplorerResponse;
 import com.algotrader.domain.enums.InstrumentType;
 import com.algotrader.domain.model.Instrument;
 import com.algotrader.entity.InstrumentEntity;
@@ -297,6 +298,196 @@ class InstrumentServiceTest {
 
         // RELIANCE has no options, so not in underlying cache
         assertThat(instrumentService.getInstrumentsByUnderlying("RELIANCE")).isEmpty();
+    }
+
+    // ---- Chain explorer tests ----
+
+    @Test
+    @DisplayName("buildChainExplorer: returns FUT + paired CE/PE strikes sorted by strike")
+    void buildChainExplorerPairsCEAndPE() {
+        LocalDate expiry = LocalDate.of(2024, 2, 22);
+
+        when(instrumentJpaRepository.existsByDownloadDate(TODAY)).thenReturn(true);
+
+        InstrumentEntity e1 = buildEntity(9001L, "NIFTY24FEBFUT", "NIFTY", "FUT", "0");
+        InstrumentEntity e2 = buildEntity(9002L, "NIFTY24FEB22000CE", "NIFTY", "CE", "22000.0");
+        InstrumentEntity e3 = buildEntity(9003L, "NIFTY24FEB22000PE", "NIFTY", "PE", "22000.0");
+        InstrumentEntity e4 = buildEntity(9004L, "NIFTY24FEB22500CE", "NIFTY", "CE", "22500.0");
+        InstrumentEntity e5 = buildEntity(9005L, "NIFTY24FEB22500PE", "NIFTY", "PE", "22500.0");
+        // Spot index instrument
+        InstrumentEntity e6 = buildEntity(256265L, "NIFTY 50", "NIFTY", "EQ", "0");
+        e6.setExchange("NSE");
+        e6.setSegment("INDICES");
+        when(instrumentJpaRepository.findByDownloadDate(TODAY)).thenReturn(List.of(e1, e2, e3, e4, e5, e6));
+
+        Instrument d1 = buildDomainWithExpiry(9001L, "NIFTY24FEBFUT", "NIFTY", InstrumentType.FUT, "0", expiry);
+        Instrument d2 =
+                buildDomainWithExpiry(9002L, "NIFTY24FEB22000CE", "NIFTY", InstrumentType.CE, "22000.0", expiry);
+        Instrument d3 =
+                buildDomainWithExpiry(9003L, "NIFTY24FEB22000PE", "NIFTY", InstrumentType.PE, "22000.0", expiry);
+        Instrument d4 =
+                buildDomainWithExpiry(9004L, "NIFTY24FEB22500CE", "NIFTY", InstrumentType.CE, "22500.0", expiry);
+        Instrument d5 =
+                buildDomainWithExpiry(9005L, "NIFTY24FEB22500PE", "NIFTY", InstrumentType.PE, "22500.0", expiry);
+        Instrument spotInst = Instrument.builder()
+                .token(256265L)
+                .tradingSymbol("NIFTY 50")
+                .name("NIFTY 50")
+                .underlying("NIFTY")
+                .type(InstrumentType.EQ)
+                .exchange("NSE")
+                .segment("INDICES")
+                .lotSize(1)
+                .downloadDate(TODAY)
+                .build();
+        when(instrumentMapper.toDomainList(List.of(e1, e2, e3, e4, e5, e6)))
+                .thenReturn(List.of(d1, d2, d3, d4, d5, spotInst));
+
+        instrumentService.loadInstrumentsOnStartup();
+
+        ChainExplorerResponse chain = instrumentService.buildChainExplorer("NIFTY", expiry);
+
+        assertThat(chain.getUnderlying()).isEqualTo("NIFTY");
+        assertThat(chain.getDisplayName()).isEqualTo("NIFTY 50");
+        assertThat(chain.getSpotToken()).isEqualTo(256265L);
+        assertThat(chain.getExpiry()).isEqualTo(expiry);
+
+        // Future
+        assertThat(chain.getFuture()).isNotNull();
+        assertThat(chain.getFuture().getToken()).isEqualTo(9001L);
+        assertThat(chain.getFuture().getTradingSymbol()).isEqualTo("NIFTY24FEBFUT");
+
+        // Options: 2 strikes, sorted ascending
+        assertThat(chain.getOptions()).hasSize(2);
+        assertThat(chain.getOptions().get(0).getStrike()).isEqualByComparingTo(new BigDecimal("22000.0"));
+        assertThat(chain.getOptions().get(0).getCall()).isNotNull();
+        assertThat(chain.getOptions().get(0).getCall().getToken()).isEqualTo(9002L);
+        assertThat(chain.getOptions().get(0).getPut()).isNotNull();
+        assertThat(chain.getOptions().get(0).getPut().getToken()).isEqualTo(9003L);
+
+        assertThat(chain.getOptions().get(1).getStrike()).isEqualByComparingTo(new BigDecimal("22500.0"));
+        assertThat(chain.getOptions().get(1).getCall().getToken()).isEqualTo(9004L);
+        assertThat(chain.getOptions().get(1).getPut().getToken()).isEqualTo(9005L);
+    }
+
+    @Test
+    @DisplayName("buildChainExplorer: returns empty options when no derivatives exist")
+    void buildChainExplorerEmptyChain() {
+        LocalDate expiry = LocalDate.of(2024, 6, 15);
+
+        ChainExplorerResponse chain = instrumentService.buildChainExplorer("UNKNOWN", expiry);
+
+        assertThat(chain.getUnderlying()).isEqualTo("UNKNOWN");
+        assertThat(chain.getDisplayName()).isEqualTo("UNKNOWN");
+        assertThat(chain.getSpotToken()).isNull();
+        assertThat(chain.getFuture()).isNull();
+        assertThat(chain.getOptions()).isEmpty();
+    }
+
+    // ---- Spot cache tests ----
+
+    @Test
+    @DisplayName("spotCache: equities keyed by tradingSymbol, indices by NFO underlying")
+    void spotCachePopulatedCorrectly() {
+        when(instrumentJpaRepository.existsByDownloadDate(TODAY)).thenReturn(true);
+
+        // NSE equity
+        InstrumentEntity eq = buildEntity(100001L, "ADANIPORTS", "ADANIPORTS", "EQ", "0");
+        eq.setExchange("NSE");
+        eq.setSegment("NSE");
+
+        // NSE index
+        InstrumentEntity idx = buildEntity(256265L, "NIFTY 50", "NIFTY", "EQ", "0");
+        idx.setExchange("NSE");
+        idx.setSegment("INDICES");
+
+        when(instrumentJpaRepository.findByDownloadDate(TODAY)).thenReturn(List.of(eq, idx));
+
+        Instrument eqDomain = Instrument.builder()
+                .token(100001L)
+                .tradingSymbol("ADANIPORTS")
+                .name("ADANI PORT & SEZ")
+                .underlying("ADANIPORTS")
+                .type(InstrumentType.EQ)
+                .exchange("NSE")
+                .segment("NSE")
+                .lotSize(1)
+                .downloadDate(TODAY)
+                .build();
+        Instrument idxDomain = Instrument.builder()
+                .token(256265L)
+                .tradingSymbol("NIFTY 50")
+                .name("NIFTY 50")
+                .underlying("NIFTY")
+                .type(InstrumentType.EQ)
+                .exchange("NSE")
+                .segment("INDICES")
+                .lotSize(1)
+                .downloadDate(TODAY)
+                .build();
+        when(instrumentMapper.toDomainList(List.of(eq, idx))).thenReturn(List.of(eqDomain, idxDomain));
+
+        instrumentService.loadInstrumentsOnStartup();
+
+        // Equity keyed by tradingSymbol
+        assertThat(instrumentService.getSpotInstrument("ADANIPORTS")).isPresent();
+        assertThat(instrumentService.getSpotInstrument("ADANIPORTS").get().getName())
+                .isEqualTo("ADANI PORT & SEZ");
+
+        // Index keyed by NFO underlying name
+        assertThat(instrumentService.getSpotInstrument("NIFTY")).isPresent();
+        assertThat(instrumentService.getSpotInstrument("NIFTY").get().getToken())
+                .isEqualTo(256265L);
+
+        // Non-existent underlying
+        assertThat(instrumentService.getSpotInstrument("UNKNOWN")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("searchInstruments: exchange filter restricts results")
+    void searchInstrumentsWithExchangeFilter() {
+        when(instrumentJpaRepository.existsByDownloadDate(TODAY)).thenReturn(true);
+
+        InstrumentEntity e1 = buildEntity(10001L, "RELIANCE", "RELIANCE", "EQ", "0");
+        e1.setExchange("NSE");
+        e1.setSegment("NSE");
+        InstrumentEntity e2 = buildEntity(10002L, "RELIANCE26FEBFUT", "RELIANCE", "FUT", "0");
+        when(instrumentJpaRepository.findByDownloadDate(TODAY)).thenReturn(List.of(e1, e2));
+
+        Instrument d1 = Instrument.builder()
+                .token(10001L)
+                .tradingSymbol("RELIANCE")
+                .name("RELIANCE INDUSTRIES")
+                .underlying("RELIANCE")
+                .type(InstrumentType.EQ)
+                .exchange("NSE")
+                .segment("NSE")
+                .lotSize(1)
+                .downloadDate(TODAY)
+                .build();
+        Instrument d2 = buildDomain(10002L, "RELIANCE26FEBFUT", "RELIANCE", InstrumentType.FUT, "0");
+        when(instrumentMapper.toDomainList(List.of(e1, e2))).thenReturn(List.of(d1, d2));
+
+        instrumentService.loadInstrumentsOnStartup();
+
+        // No exchange filter — both results
+        assertThat(instrumentService.searchInstruments("RELIANCE", null)).hasSize(2);
+
+        // NSE filter — only equity
+        assertThat(instrumentService.searchInstruments("RELIANCE", "NSE")).hasSize(1);
+        assertThat(instrumentService
+                        .searchInstruments("RELIANCE", "NSE")
+                        .getFirst()
+                        .getExchange())
+                .isEqualTo("NSE");
+
+        // NFO filter — only future
+        assertThat(instrumentService.searchInstruments("RELIANCE", "NFO")).hasSize(1);
+        assertThat(instrumentService
+                        .searchInstruments("RELIANCE", "NFO")
+                        .getFirst()
+                        .getType())
+                .isEqualTo(InstrumentType.FUT);
     }
 
     // ---- Builder helpers ----

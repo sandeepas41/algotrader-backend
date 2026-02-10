@@ -1,5 +1,6 @@
 package com.algotrader.api.controller;
 
+import com.algotrader.api.dto.response.ChainExplorerResponse;
 import com.algotrader.domain.model.Instrument;
 import com.algotrader.domain.model.OptionChain;
 import com.algotrader.service.InstrumentService;
@@ -25,6 +26,7 @@ import org.springframework.web.bind.annotation.RestController;
  *   <li>GET /api/market-data/instruments/{token} -- instrument by token</li>
  *   <li>GET /api/market-data/expiries/{underlying} -- available expiry dates</li>
  *   <li>GET /api/market-data/underlyings -- available underlying symbols</li>
+ *   <li>GET /api/market-data/chain -- chain explorer (FUT + option strikes) for underlying + expiry</li>
  * </ul>
  */
 @RestController
@@ -88,6 +90,18 @@ public class MarketDataController {
     public ResponseEntity<Set<String>> getUnderlyings() {
         Set<String> underlyings = instrumentService.getAvailableUnderlyings();
         return ResponseEntity.ok(underlyings);
+    }
+
+    /**
+     * Returns the chain explorer data for a given underlying and expiry.
+     * Includes spot token, nearest future, and all option strikes paired as call/put.
+     */
+    @GetMapping("/chain")
+    public ResponseEntity<ChainExplorerResponse> getChainExplorer(
+            @RequestParam String underlying,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate expiry) {
+        ChainExplorerResponse chain = instrumentService.buildChainExplorer(underlying, expiry);
+        return ResponseEntity.ok(chain);
     }
 
     /**

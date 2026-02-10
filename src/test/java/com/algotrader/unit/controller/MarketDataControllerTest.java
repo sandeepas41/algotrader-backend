@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.algotrader.api.controller.MarketDataController;
+import com.algotrader.api.dto.response.ChainExplorerResponse;
 import com.algotrader.config.ApiResponseAdvice;
 import com.algotrader.domain.enums.InstrumentType;
 import com.algotrader.domain.model.Instrument;
@@ -143,5 +144,51 @@ class MarketDataControllerTest {
         mockMvc.perform(get("/api/market-data/underlyings"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data").isArray());
+    }
+
+    @Test
+    @DisplayName("GET /api/market-data/chain returns chain explorer data")
+    void getChainExplorerReturnsChain() throws Exception {
+        ChainExplorerResponse response = ChainExplorerResponse.builder()
+                .underlying("NIFTY")
+                .displayName("NIFTY 50")
+                .expiry(LocalDate.of(2025, 2, 27))
+                .spotToken(256265L)
+                .lotSize(75)
+                .future(ChainExplorerResponse.FutureInfo.builder()
+                        .token(9001L)
+                        .tradingSymbol("NIFTY25FEBFUT")
+                        .lotSize(75)
+                        .build())
+                .options(List.of(ChainExplorerResponse.OptionStrikeInfo.builder()
+                        .strike(BigDecimal.valueOf(22000))
+                        .call(ChainExplorerResponse.OptionSideInfo.builder()
+                                .token(9002L)
+                                .tradingSymbol("NIFTY25FEB22000CE")
+                                .build())
+                        .put(ChainExplorerResponse.OptionSideInfo.builder()
+                                .token(9003L)
+                                .tradingSymbol("NIFTY25FEB22000PE")
+                                .build())
+                        .lotSize(75)
+                        .build()))
+                .build();
+
+        when(instrumentService.buildChainExplorer(eq("NIFTY"), any(LocalDate.class)))
+                .thenReturn(response);
+
+        mockMvc.perform(get("/api/market-data/chain")
+                        .param("underlying", "NIFTY")
+                        .param("expiry", "2025-02-27"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.underlying").value("NIFTY"))
+                .andExpect(jsonPath("$.data.displayName").value("NIFTY 50"))
+                .andExpect(jsonPath("$.data.spotToken").value(256265))
+                .andExpect(jsonPath("$.data.lotSize").value(75))
+                .andExpect(jsonPath("$.data.future.token").value(9001))
+                .andExpect(jsonPath("$.data.future.tradingSymbol").value("NIFTY25FEBFUT"))
+                .andExpect(jsonPath("$.data.options[0].strike").value(22000))
+                .andExpect(jsonPath("$.data.options[0].call.token").value(9002))
+                .andExpect(jsonPath("$.data.options[0].put.token").value(9003));
     }
 }

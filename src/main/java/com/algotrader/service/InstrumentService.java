@@ -1,5 +1,6 @@
 package com.algotrader.service;
 
+import com.algotrader.api.dto.response.ChainExplorerResponse;
 import com.algotrader.domain.IndexMapping;
 import com.algotrader.domain.enums.InstrumentType;
 import com.algotrader.domain.model.Instrument;
@@ -16,10 +17,12 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 import org.json.JSONException;
@@ -152,6 +155,106 @@ public class InstrumentService {
         return derivativesCache.getOrDefault(underlying, Collections.emptyList()).stream()
                 .filter(i -> expiry.equals(i.getExpiry()))
                 .toList();
+    }
+
+    /**
+     * Builds a full chain explorer response for a given underlying and expiry.
+     * Includes spot token, nearest future, and all option strikes paired as call/put.
+     *
+     * @param underlying the root underlying, e.g., "NIFTY", "BANKNIFTY", "ADANIPORTS"
+     * @param expiry the expiry date
+     * @return the chain explorer response
+     */
+    public ChainExplorerResponse buildChainExplorer(String underlying, LocalDate expiry) {
+        List<Instrument> derivatives = getDerivativesForExpiry(underlying, expiry);
+        Instrument spotInstrument = spotCache.get(underlying);
+
+        // Find futures for this expiry
+        List<Instrument> futures = derivatives.stream()
+                .filter(i -> InstrumentType.FUT == i.getType())
+                .sorted(Comparator.comparing(Instrument::getTradingSymbol))
+                .toList();
+
+        ChainExplorerResponse.FutureInfo futureInfo = null;
+        if (!futures.isEmpty()) {
+            Instrument fut = futures.getFirst();
+            futureInfo = ChainExplorerResponse.FutureInfo.builder()
+                    .token(fut.getToken())
+                    .tradingSymbol(fut.getTradingSymbol())
+                    .lotSize(fut.getLotSize())
+                    .build();
+        }
+
+        // Group options by strike, pair CE and PE
+        TreeMap<BigDecimal, Instrument> calls = new TreeMap<>();
+        TreeMap<BigDecimal, Instrument> puts = new TreeMap<>();
+        int lotSize = 0;
+
+        for (Instrument inst : derivatives) {
+            if (inst.getStrike() == null) {
+                continue;
+            }
+            if (InstrumentType.CE == inst.getType()) {
+                calls.put(inst.getStrike(), inst);
+                if (lotSize == 0) {
+                    lotSize = inst.getLotSize();
+                }
+            } else if (InstrumentType.PE == inst.getType()) {
+                puts.put(inst.getStrike(), inst);
+                if (lotSize == 0) {
+                    lotSize = inst.getLotSize();
+                }
+            }
+        }
+
+        // Use lotSize from future if no options found
+        if (lotSize == 0 && futureInfo != null) {
+            lotSize = futureInfo.getLotSize();
+        }
+
+        // Merge all strikes from both calls and puts
+        Set<BigDecimal> allStrikes = new java.util.TreeSet<>();
+        allStrikes.addAll(calls.keySet());
+        allStrikes.addAll(puts.keySet());
+
+        List<ChainExplorerResponse.OptionStrikeInfo> options = new ArrayList<>();
+        for (BigDecimal strike : allStrikes) {
+            Instrument call = calls.get(strike);
+            Instrument put = puts.get(strike);
+
+            ChainExplorerResponse.OptionSideInfo callInfo = call != null
+                    ? ChainExplorerResponse.OptionSideInfo.builder()
+                            .token(call.getToken())
+                            .tradingSymbol(call.getTradingSymbol())
+                            .build()
+                    : null;
+
+            ChainExplorerResponse.OptionSideInfo putInfo = put != null
+                    ? ChainExplorerResponse.OptionSideInfo.builder()
+                            .token(put.getToken())
+                            .tradingSymbol(put.getTradingSymbol())
+                            .build()
+                    : null;
+
+            int strikeLotSize = call != null ? call.getLotSize() : (put != null ? put.getLotSize() : lotSize);
+
+            options.add(ChainExplorerResponse.OptionStrikeInfo.builder()
+                    .strike(strike)
+                    .call(callInfo)
+                    .put(putInfo)
+                    .lotSize(strikeLotSize)
+                    .build());
+        }
+
+        return ChainExplorerResponse.builder()
+                .underlying(underlying)
+                .displayName(spotInstrument != null ? spotInstrument.getName() : underlying)
+                .expiry(expiry)
+                .spotToken(spotInstrument != null ? spotInstrument.getToken() : null)
+                .lotSize(lotSize)
+                .future(futureInfo)
+                .options(options)
+                .build();
     }
 
     /**
