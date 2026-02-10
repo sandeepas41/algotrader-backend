@@ -1,6 +1,7 @@
 package com.algotrader.broker;
 
 import com.algotrader.service.InstrumentService;
+import com.algotrader.service.WatchlistSubscriptionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -36,10 +37,15 @@ public class StartupAuthRunner implements ApplicationListener<ApplicationReadyEv
 
     private final KiteAuthService kiteAuthService;
     private final InstrumentService instrumentService;
+    private final WatchlistSubscriptionService watchlistSubscriptionService;
 
-    public StartupAuthRunner(KiteAuthService kiteAuthService, InstrumentService instrumentService) {
+    public StartupAuthRunner(
+            KiteAuthService kiteAuthService,
+            InstrumentService instrumentService,
+            WatchlistSubscriptionService watchlistSubscriptionService) {
         this.kiteAuthService = kiteAuthService;
         this.instrumentService = instrumentService;
+        this.watchlistSubscriptionService = watchlistSubscriptionService;
     }
 
     @Override
@@ -94,17 +100,31 @@ public class StartupAuthRunner implements ApplicationListener<ApplicationReadyEv
     }
 
     /**
-     * Loads today's instruments into the in-memory cache.
+     * Loads today's instruments into the in-memory cache, then subscribes
+     * watchlist instruments for auto-configured underlyings.
      * Non-fatal: if instrument loading fails, auth is still valid and the system
      * can operate without instruments (e.g., manual order placement).
      */
     private void loadInstruments() {
         try {
             instrumentService.loadInstrumentsOnStartup();
+            subscribeWatchlistInstruments();
         } catch (Exception e) {
             log.error(
                     "Failed to load instruments on startup: {}. System continues without instrument cache.",
                     e.getMessage());
+        }
+    }
+
+    /**
+     * Subscribes instruments for all enabled watchlist configs.
+     * Non-fatal: failure here doesn't affect other startup operations.
+     */
+    private void subscribeWatchlistInstruments() {
+        try {
+            watchlistSubscriptionService.subscribeAll();
+        } catch (Exception e) {
+            log.error("Failed to auto-subscribe watchlist instruments: {}", e.getMessage());
         }
     }
 }
