@@ -24,10 +24,7 @@ Thumbs.db
 # .mvn/wrapper/maven-wrapper.jar is committed for reproducible builds
 
 # H2 Database files
-data/*.db
-data/*.mv.db
-data/*.trace.db
-data/*.lock.db
+data/
 
 # Dev server
 dev.log
