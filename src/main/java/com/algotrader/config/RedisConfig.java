@@ -7,14 +7,15 @@ import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.serializer.GenericJacksonJsonRedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
+import tools.jackson.databind.jsontype.BasicPolymorphicTypeValidator;
 
 /**
  * Redis configuration with Jackson 3 JSON serialization.
  *
  * <p>Uses {@link GenericJacksonJsonRedisSerializer} (Jackson 3 / tools.jackson) which has
  * built-in JSR-310 support for {@code LocalDateTime}, {@code LocalDate}, etc.
- * The older Jackson 2 variant ({@code GenericJackson2JsonRedisSerializer}) lacks JSR-310
- * support unless {@code jackson-datatype-jsr310} is explicitly added.
+ * Default typing is enabled so that domain objects (Order, Position, etc.) are
+ * deserialized to the correct types instead of {@code LinkedHashMap}.
  *
  * <p>All keys are prefixed with "algo:" because this is a shared Redis server.
  * Key constants defined here are used by all Redis repositories to ensure consistent
@@ -58,8 +59,17 @@ public class RedisConfig {
         redisTemplate.setConnectionFactory(redisConnectionFactory);
 
         StringRedisSerializer stringRedisSerializer = new StringRedisSerializer();
-        GenericJacksonJsonRedisSerializer jsonRedisSerializer =
-                GenericJacksonJsonRedisSerializer.builder().build();
+
+        // Jackson 3 serializer with default typing enabled.
+        // - Built-in JSR-310 support (LocalDateTime, LocalDate)
+        // - @class property stored in JSON for proper deserialization to domain objects
+        BasicPolymorphicTypeValidator typeValidator = BasicPolymorphicTypeValidator.builder()
+                .allowIfBaseType(Object.class)
+                .build();
+
+        GenericJacksonJsonRedisSerializer jsonRedisSerializer = GenericJacksonJsonRedisSerializer.builder()
+                .enableDefaultTyping(typeValidator)
+                .build();
 
         redisTemplate.setKeySerializer(stringRedisSerializer);
         redisTemplate.setValueSerializer(jsonRedisSerializer);
