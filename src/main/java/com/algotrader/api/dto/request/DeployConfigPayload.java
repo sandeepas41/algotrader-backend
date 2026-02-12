@@ -25,6 +25,7 @@ import lombok.Setter;
 public class DeployConfigPayload {
 
     private List<LegPayload> legs;
+    private List<Object> rules;
     private int lots = 1;
     private String tradingMode;
 

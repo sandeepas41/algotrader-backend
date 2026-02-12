@@ -5,11 +5,16 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
+import org.springframework.data.redis.serializer.GenericJacksonJsonRedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 
 /**
- * Redis configuration with Jackson JSON serialization.
+ * Redis configuration with Jackson 3 JSON serialization.
+ *
+ * <p>Uses {@link GenericJacksonJsonRedisSerializer} (Jackson 3 / tools.jackson) which has
+ * built-in JSR-310 support for {@code LocalDateTime}, {@code LocalDate}, etc.
+ * The older Jackson 2 variant ({@code GenericJackson2JsonRedisSerializer}) lacks JSR-310
+ * support unless {@code jackson-datatype-jsr310} is explicitly added.
  *
  * <p>All keys are prefixed with "algo:" because this is a shared Redis server.
  * Key constants defined here are used by all Redis repositories to ensure consistent
@@ -53,7 +58,8 @@ public class RedisConfig {
         redisTemplate.setConnectionFactory(redisConnectionFactory);
 
         StringRedisSerializer stringRedisSerializer = new StringRedisSerializer();
-        GenericJackson2JsonRedisSerializer jsonRedisSerializer = new GenericJackson2JsonRedisSerializer();
+        GenericJacksonJsonRedisSerializer jsonRedisSerializer =
+                GenericJacksonJsonRedisSerializer.builder().build();
 
         redisTemplate.setKeySerializer(stringRedisSerializer);
         redisTemplate.setValueSerializer(jsonRedisSerializer);
