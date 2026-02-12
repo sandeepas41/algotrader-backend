@@ -7,24 +7,33 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+import com.algotrader.domain.enums.InstrumentType;
+import com.algotrader.domain.enums.OrderPriority;
+import com.algotrader.domain.enums.OrderSide;
 import com.algotrader.domain.enums.StrategyStatus;
 import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.domain.model.Greeks;
+import com.algotrader.domain.model.Instrument;
+import com.algotrader.domain.model.NewLegDefinition;
 import com.algotrader.domain.model.Position;
 import com.algotrader.event.EventPublisherHelper;
 import com.algotrader.oms.JournaledMultiLegExecutor;
 import com.algotrader.oms.OrderRequest;
+import com.algotrader.service.InstrumentService;
 import com.algotrader.strategy.base.BaseStrategy;
 import com.algotrader.strategy.base.BaseStrategyConfig;
 import com.algotrader.strategy.base.MarketSnapshot;
 import com.algotrader.strategy.base.PositionalStrategyConfig;
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -44,6 +53,7 @@ class BaseStrategyTest {
 
     private EventPublisherHelper eventPublisherHelper;
     private JournaledMultiLegExecutor journaledMultiLegExecutor;
+    private InstrumentService instrumentService;
     private TestStrategy strategy;
     private PositionalStrategyConfig config;
 
@@ -51,6 +61,15 @@ class BaseStrategyTest {
     void setUp() {
         eventPublisherHelper = mock(EventPublisherHelper.class);
         journaledMultiLegExecutor = mock(JournaledMultiLegExecutor.class);
+        instrumentService = mock(InstrumentService.class);
+
+        // Default: entry execution succeeds (strategies transition to ACTIVE)
+        when(journaledMultiLegExecutor.executeParallel(any(), anyString(), anyString(), any()))
+                .thenReturn(JournaledMultiLegExecutor.MultiLegResult.builder()
+                        .groupId("test-group")
+                        .success(true)
+                        .legResults(List.of())
+                        .build());
 
         config = PositionalStrategyConfig.builder()
                 .underlying("NIFTY")
@@ -64,7 +83,7 @@ class BaseStrategyTest {
                 .build();
 
         strategy = new TestStrategy("STR-1", "Test Straddle", config);
-        strategy.setServices(eventPublisherHelper, journaledMultiLegExecutor);
+        strategy.setServices(eventPublisherHelper, journaledMultiLegExecutor, instrumentService);
     }
 
     private MarketSnapshot snapshot() {
@@ -156,6 +175,23 @@ class BaseStrategyTest {
         }
 
         @Test
+        @DisplayName("initiateClose builds and executes exit orders via executor")
+        void initiateCloseExecutesExitOrders() {
+            strategy.arm();
+            strategy.setShouldEnter(true);
+            strategy.evaluate(snapshot()); // -> ACTIVE
+
+            // Add a position so exit orders are built
+            strategy.addPosition(buildPosition("P1", "NIFTY24FEB22000CE", -50, BigDecimal.ZERO));
+
+            strategy.initiateClose();
+
+            assertThat(strategy.getStatus()).isEqualTo(StrategyStatus.CLOSING);
+            verify(journaledMultiLegExecutor)
+                    .executeParallel(any(), eq("STR-1"), eq("EXIT"), eq(OrderPriority.STRATEGY_EXIT));
+        }
+
+        @Test
         @DisplayName("Lifecycle changes publish decision events")
         void lifecyclePublishesDecisionEvents() {
             strategy.arm();
@@ -239,6 +275,23 @@ class BaseStrategyTest {
 
             assertThat(strategy.getStatus()).isEqualTo(StrategyStatus.ACTIVE);
             assertThat(strategy.getEntryTime()).isNotNull();
+        }
+
+        @Test
+        @DisplayName("Entry stays ARMED when executor returns failure")
+        void entryStaysArmedOnExecutionFailure() {
+            when(journaledMultiLegExecutor.executeParallel(any(), anyString(), anyString(), any()))
+                    .thenReturn(JournaledMultiLegExecutor.MultiLegResult.builder()
+                            .groupId("fail-group")
+                            .success(false)
+                            .legResults(List.of())
+                            .build());
+
+            strategy.arm();
+            strategy.setShouldEnter(true);
+            strategy.evaluate(snapshot());
+
+            assertThat(strategy.getStatus()).isEqualTo(StrategyStatus.ARMED);
         }
 
         @Test
@@ -724,7 +777,7 @@ class BaseStrategyTest {
                     .build();
 
             TestStrategy autoStrategy = new TestStrategy("STR-AP", "Auto-Pause Test", configWithAutoPause);
-            autoStrategy.setServices(eventPublisherHelper, journaledMultiLegExecutor);
+            autoStrategy.setServices(eventPublisherHelper, journaledMultiLegExecutor, instrumentService);
 
             // Get to ACTIVE
             autoStrategy.arm();
@@ -754,7 +807,7 @@ class BaseStrategyTest {
                     .build();
 
             TestStrategy deltaStrategy = new TestStrategy("STR-DP", "Delta Pause Test", configWithDeltaPause);
-            deltaStrategy.setServices(eventPublisherHelper, journaledMultiLegExecutor);
+            deltaStrategy.setServices(eventPublisherHelper, journaledMultiLegExecutor, instrumentService);
 
             // Get to ACTIVE
             deltaStrategy.arm();
@@ -801,7 +854,7 @@ class BaseStrategyTest {
                     .build();
 
             TestStrategy safeStrategy = new TestStrategy("STR-SAFE", "Safe Test", configWithAutoPause);
-            safeStrategy.setServices(eventPublisherHelper, journaledMultiLegExecutor);
+            safeStrategy.setServices(eventPublisherHelper, journaledMultiLegExecutor, instrumentService);
 
             safeStrategy.arm();
             safeStrategy.setShouldEnter(true);
@@ -813,6 +866,161 @@ class BaseStrategyTest {
             safeStrategy.evaluate(snapshot());
 
             assertThat(safeStrategy.getStatus()).isEqualTo(StrategyStatus.ACTIVE);
+        }
+    }
+
+    // ========================
+    // IMMEDIATE ENTRY
+    // ========================
+
+    @Nested
+    @DisplayName("Immediate Entry (from FE leg configs)")
+    class ImmediateEntry {
+
+        @Test
+        @DisplayName("executeImmediateEntry transitions to ACTIVE on success")
+        void immediateEntryTransitionsToActive() {
+            // Build config with fixed legs + immediate entry
+            PositionalStrategyConfig immediateConfig = PositionalStrategyConfig.builder()
+                    .underlying("NIFTY")
+                    .expiry(LocalDate.of(2026, 2, 17))
+                    .lots(1)
+                    .strikeInterval(BigDecimal.valueOf(50))
+                    .targetPercent(BigDecimal.valueOf(0.5))
+                    .stopLossMultiplier(BigDecimal.valueOf(2.0))
+                    .minDaysToExpiry(1)
+                    .immediateEntry(true)
+                    .legConfigs(List.of(
+                            NewLegDefinition.builder()
+                                    .strike(BigDecimal.valueOf(25850))
+                                    .optionType(InstrumentType.CE)
+                                    .side(OrderSide.BUY)
+                                    .lots(1)
+                                    .build(),
+                            NewLegDefinition.builder()
+                                    .strike(BigDecimal.valueOf(26050))
+                                    .optionType(InstrumentType.CE)
+                                    .side(OrderSide.SELL)
+                                    .lots(1)
+                                    .build()))
+                    .build();
+
+            TestStrategy immediateStrategy = new TestStrategy("STR-IMM", "Immediate Test", immediateConfig);
+            immediateStrategy.setServices(eventPublisherHelper, journaledMultiLegExecutor, instrumentService);
+
+            // Mock instrument resolution
+            Instrument ceInstrument1 = Instrument.builder()
+                    .token(100001L)
+                    .tradingSymbol("NIFTY26FEB25850CE")
+                    .exchange("NFO")
+                    .lotSize(75)
+                    .build();
+            Instrument ceInstrument2 = Instrument.builder()
+                    .token(100002L)
+                    .tradingSymbol("NIFTY26FEB26050CE")
+                    .exchange("NFO")
+                    .lotSize(75)
+                    .build();
+
+            when(instrumentService.resolveOption(
+                            eq("NIFTY"),
+                            eq(LocalDate.of(2026, 2, 17)),
+                            eq(BigDecimal.valueOf(25850)),
+                            eq(InstrumentType.CE)))
+                    .thenReturn(Optional.of(ceInstrument1));
+            when(instrumentService.resolveOption(
+                            eq("NIFTY"),
+                            eq(LocalDate.of(2026, 2, 17)),
+                            eq(BigDecimal.valueOf(26050)),
+                            eq(InstrumentType.CE)))
+                    .thenReturn(Optional.of(ceInstrument2));
+
+            immediateStrategy.arm();
+            immediateStrategy.executeImmediateEntry();
+
+            assertThat(immediateStrategy.getStatus()).isEqualTo(StrategyStatus.ACTIVE);
+            verify(journaledMultiLegExecutor)
+                    .executeParallel(any(), eq("STR-IMM"), eq("ENTRY"), eq(OrderPriority.STRATEGY_ENTRY));
+        }
+
+        @Test
+        @DisplayName("executeImmediateEntry stays ARMED when executor fails")
+        void immediateEntryStaysArmedOnFailure() {
+            PositionalStrategyConfig immediateConfig = PositionalStrategyConfig.builder()
+                    .underlying("NIFTY")
+                    .expiry(LocalDate.of(2026, 2, 17))
+                    .lots(1)
+                    .strikeInterval(BigDecimal.valueOf(50))
+                    .targetPercent(BigDecimal.valueOf(0.5))
+                    .stopLossMultiplier(BigDecimal.valueOf(2.0))
+                    .minDaysToExpiry(1)
+                    .immediateEntry(true)
+                    .legConfigs(List.of(NewLegDefinition.builder()
+                            .strike(BigDecimal.valueOf(25850))
+                            .optionType(InstrumentType.CE)
+                            .side(OrderSide.BUY)
+                            .lots(1)
+                            .build()))
+                    .build();
+
+            TestStrategy immediateStrategy = new TestStrategy("STR-FAIL", "Fail Test", immediateConfig);
+            immediateStrategy.setServices(eventPublisherHelper, journaledMultiLegExecutor, instrumentService);
+
+            // Mock instrument resolution
+            when(instrumentService.resolveOption(any(), any(), any(), any()))
+                    .thenReturn(Optional.of(Instrument.builder()
+                            .token(100001L)
+                            .tradingSymbol("NIFTY26FEB25850CE")
+                            .exchange("NFO")
+                            .lotSize(75)
+                            .build()));
+
+            // Mock executor failure
+            when(journaledMultiLegExecutor.executeParallel(any(), anyString(), anyString(), any()))
+                    .thenReturn(JournaledMultiLegExecutor.MultiLegResult.builder()
+                            .groupId("fail-group")
+                            .success(false)
+                            .legResults(List.of())
+                            .build());
+
+            immediateStrategy.arm();
+            immediateStrategy.executeImmediateEntry();
+
+            assertThat(immediateStrategy.getStatus()).isEqualTo(StrategyStatus.ARMED);
+        }
+
+        @Test
+        @DisplayName("executeImmediateEntry skips when instrument cannot be resolved")
+        void immediateEntrySkipsOnUnresolvedInstrument() {
+            PositionalStrategyConfig immediateConfig = PositionalStrategyConfig.builder()
+                    .underlying("NIFTY")
+                    .expiry(LocalDate.of(2026, 2, 17))
+                    .lots(1)
+                    .strikeInterval(BigDecimal.valueOf(50))
+                    .targetPercent(BigDecimal.valueOf(0.5))
+                    .stopLossMultiplier(BigDecimal.valueOf(2.0))
+                    .minDaysToExpiry(1)
+                    .immediateEntry(true)
+                    .legConfigs(List.of(NewLegDefinition.builder()
+                            .strike(BigDecimal.valueOf(99999))
+                            .optionType(InstrumentType.CE)
+                            .side(OrderSide.BUY)
+                            .lots(1)
+                            .build()))
+                    .build();
+
+            TestStrategy immediateStrategy = new TestStrategy("STR-NR", "No Resolve Test", immediateConfig);
+            immediateStrategy.setServices(eventPublisherHelper, journaledMultiLegExecutor, instrumentService);
+
+            // Mock instrument NOT found
+            when(instrumentService.resolveOption(any(), any(), any(), any())).thenReturn(Optional.empty());
+
+            immediateStrategy.arm();
+            immediateStrategy.executeImmediateEntry();
+
+            // Should stay ARMED — no orders were submitted
+            assertThat(immediateStrategy.getStatus()).isEqualTo(StrategyStatus.ARMED);
+            verify(journaledMultiLegExecutor, times(0)).executeParallel(any(), anyString(), anyString(), any());
         }
     }
 

@@ -1,11 +1,30 @@
 package com.algotrader.api.controller;
 
+import com.algotrader.api.dto.request.DeployConfigPayload;
 import com.algotrader.core.engine.StrategyEngine;
 import com.algotrader.domain.enums.ActionType;
+import com.algotrader.domain.enums.InstrumentType;
+import com.algotrader.domain.enums.OrderSide;
 import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.domain.model.AdjustmentAction;
+import com.algotrader.domain.model.NewLegDefinition;
+import com.algotrader.mapper.JsonHelper;
 import com.algotrader.strategy.base.BaseStrategy;
 import com.algotrader.strategy.base.BaseStrategyConfig;
+import com.algotrader.strategy.impl.BearCallSpreadConfig;
+import com.algotrader.strategy.impl.BearPutSpreadConfig;
+import com.algotrader.strategy.impl.BullCallSpreadConfig;
+import com.algotrader.strategy.impl.BullPutSpreadConfig;
+import com.algotrader.strategy.impl.CalendarSpreadConfig;
+import com.algotrader.strategy.impl.DiagonalSpreadConfig;
+import com.algotrader.strategy.impl.IronButterflyConfig;
+import com.algotrader.strategy.impl.IronCondorConfig;
+import com.algotrader.strategy.impl.LongStraddleConfig;
+import com.algotrader.strategy.impl.NakedOptionConfig;
+import com.algotrader.strategy.impl.StraddleConfig;
+import com.algotrader.strategy.impl.StrangleConfig;
+import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -71,23 +90,158 @@ public class StrategyController {
 
     /**
      * Deploys a new strategy instance.
-     * Request body must contain: type, name. Optional: autoArm (default false).
+     * Request body: type, name, underlying, expiry, config (JSON string with legs/rules/lots).
+     * Optional: autoArm (default false).
      */
     @PostMapping
     public ResponseEntity<Map<String, Object>> deployStrategy(@RequestBody Map<String, Object> body) {
         StrategyType type = StrategyType.valueOf((String) body.get("type"));
         String name = (String) body.get("name");
-        boolean autoArm = Boolean.TRUE.equals(body.get("autoArm"));
+        String underlying = (String) body.getOrDefault("underlying", "NIFTY");
+        String expiryStr = (String) body.get("expiry");
 
-        // #TODO: Build strategy-specific config from request body (StraddleConfig, IronCondorConfig, etc.)
-        BaseStrategyConfig config = BaseStrategyConfig.builder()
-                .underlying((String) body.getOrDefault("underlying", "NIFTY"))
-                .build();
+        LocalDate expiry = expiryStr != null ? LocalDate.parse(expiryStr) : null;
 
-        log.info("Deploying strategy: type={}, name={}, autoArm={}", type, name, autoArm);
+        // Parse FE config JSON properly (legs, lots, tradingMode)
+        DeployConfigPayload payload = null;
+        String configJson = (String) body.get("config");
+        if (configJson != null) {
+            payload = JsonHelper.fromJson(configJson, DeployConfigPayload.class);
+        }
+
+        int lots = payload != null ? payload.getLots() : 1;
+
+        BaseStrategyConfig config = buildConfigForType(type, underlying, expiry, lots);
+
+        // Check for immediate entry: all legs FIXED + LIVE trading mode
+        boolean immediateEntry = false;
+        List<NewLegDefinition> legConfigs = new ArrayList<>();
+
+        if (payload != null && payload.getLegs() != null && !payload.getLegs().isEmpty()) {
+            boolean allFixed = payload.getLegs().stream().allMatch(l -> "FIXED".equals(l.getStrikeType()));
+
+            if (allFixed && "LIVE".equals(payload.getTradingMode())) {
+                immediateEntry = true;
+                for (DeployConfigPayload.LegPayload leg : payload.getLegs()) {
+                    InstrumentType optionType = InstrumentType.valueOf(leg.getOptionType());
+                    OrderSide side = leg.getQuantity() > 0 ? OrderSide.BUY : OrderSide.SELL;
+                    int legLots = Math.abs(leg.getQuantity());
+
+                    legConfigs.add(NewLegDefinition.builder()
+                            .strike(leg.getFixedStrike())
+                            .optionType(optionType)
+                            .side(side)
+                            .lots(legLots)
+                            .build());
+                }
+            }
+        }
+
+        config.setLegConfigs(legConfigs);
+        config.setImmediateEntry(immediateEntry);
+
+        // Auto-arm when immediate entry is requested
+        boolean autoArm = Boolean.TRUE.equals(body.get("autoArm")) || immediateEntry;
+
+        log.info(
+                "Deploying strategy: type={}, name={}, underlying={}, expiry={}, lots={}, immediateEntry={}",
+                type,
+                name,
+                underlying,
+                expiry,
+                lots,
+                immediateEntry);
         String strategyId = strategyEngine.deployStrategy(type, name, config, autoArm);
 
         return ResponseEntity.ok(Map.of("strategyId", strategyId, "message", "Strategy deployed successfully"));
+    }
+
+    /**
+     * Builds the strategy-specific config subclass for the given type,
+     * populating common fields (underlying, expiry, lots). Strategy-specific
+     * fields use sensible defaults until a config editing UI is built.
+     */
+    private BaseStrategyConfig buildConfigForType(StrategyType type, String underlying, LocalDate expiry, int lots) {
+        return switch (type) {
+            case STRADDLE ->
+                StraddleConfig.builder()
+                        .underlying(underlying)
+                        .expiry(expiry)
+                        .lots(lots)
+                        .build();
+            case LONG_STRADDLE ->
+                LongStraddleConfig.builder()
+                        .underlying(underlying)
+                        .expiry(expiry)
+                        .lots(lots)
+                        .build();
+            case STRANGLE ->
+                StrangleConfig.builder()
+                        .underlying(underlying)
+                        .expiry(expiry)
+                        .lots(lots)
+                        .build();
+            case IRON_CONDOR ->
+                IronCondorConfig.builder()
+                        .underlying(underlying)
+                        .expiry(expiry)
+                        .lots(lots)
+                        .build();
+            case IRON_BUTTERFLY ->
+                IronButterflyConfig.builder()
+                        .underlying(underlying)
+                        .expiry(expiry)
+                        .lots(lots)
+                        .build();
+            case BULL_CALL_SPREAD ->
+                BullCallSpreadConfig.builder()
+                        .underlying(underlying)
+                        .expiry(expiry)
+                        .lots(lots)
+                        .build();
+            case BEAR_CALL_SPREAD ->
+                BearCallSpreadConfig.builder()
+                        .underlying(underlying)
+                        .expiry(expiry)
+                        .lots(lots)
+                        .build();
+            case BULL_PUT_SPREAD ->
+                BullPutSpreadConfig.builder()
+                        .underlying(underlying)
+                        .expiry(expiry)
+                        .lots(lots)
+                        .build();
+            case BEAR_PUT_SPREAD ->
+                BearPutSpreadConfig.builder()
+                        .underlying(underlying)
+                        .expiry(expiry)
+                        .lots(lots)
+                        .build();
+            case CALENDAR_SPREAD ->
+                CalendarSpreadConfig.builder()
+                        .underlying(underlying)
+                        .expiry(expiry)
+                        .lots(lots)
+                        .build();
+            case DIAGONAL_SPREAD ->
+                DiagonalSpreadConfig.builder()
+                        .underlying(underlying)
+                        .expiry(expiry)
+                        .lots(lots)
+                        .build();
+            case CE_BUY, CE_SELL, PE_BUY, PE_SELL ->
+                NakedOptionConfig.builder()
+                        .underlying(underlying)
+                        .expiry(expiry)
+                        .lots(lots)
+                        .build();
+            case CUSTOM ->
+                BaseStrategyConfig.builder()
+                        .underlying(underlying)
+                        .expiry(expiry)
+                        .lots(lots)
+                        .build();
+        };
     }
 
     /**

@@ -1,18 +1,26 @@
 package com.algotrader.strategy.base;
 
+import com.algotrader.domain.enums.OrderPriority;
+import com.algotrader.domain.enums.OrderSide;
+import com.algotrader.domain.enums.OrderType;
 import com.algotrader.domain.enums.StrategyStatus;
 import com.algotrader.domain.enums.StrategyType;
+import com.algotrader.domain.model.Instrument;
+import com.algotrader.domain.model.NewLegDefinition;
 import com.algotrader.domain.model.Position;
 import com.algotrader.event.EventPublisherHelper;
 import com.algotrader.oms.JournaledMultiLegExecutor;
 import com.algotrader.oms.OrderRequest;
+import com.algotrader.service.InstrumentService;
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.locks.StampedLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -76,9 +84,10 @@ public abstract class BaseStrategy implements TradingStrategy {
      */
     protected final StampedLock stampedLock = new StampedLock();
 
-    // ---- Services (injected via setContext) ----
+    // ---- Services (injected via setServices) ----
     protected EventPublisherHelper eventPublisherHelper;
     protected JournaledMultiLegExecutor journaledMultiLegExecutor;
+    protected InstrumentService instrumentService;
 
     protected BaseStrategy(String id, String name, BaseStrategyConfig config) {
         this.id = id;
@@ -91,9 +100,12 @@ public abstract class BaseStrategy implements TradingStrategy {
      * Kept separate from constructor to avoid circular dependencies with Spring beans.
      */
     public void setServices(
-            EventPublisherHelper eventPublisherHelper, JournaledMultiLegExecutor journaledMultiLegExecutor) {
+            EventPublisherHelper eventPublisherHelper,
+            JournaledMultiLegExecutor journaledMultiLegExecutor,
+            InstrumentService instrumentService) {
         this.eventPublisherHelper = eventPublisherHelper;
         this.journaledMultiLegExecutor = journaledMultiLegExecutor;
+        this.instrumentService = instrumentService;
     }
 
     // ========================
@@ -225,16 +237,141 @@ public abstract class BaseStrategy implements TradingStrategy {
 
     @Override
     public void initiateClose() {
+        List<OrderRequest> exitOrders;
+
         long stamp = stampedLock.writeLock();
         try {
             this.status = StrategyStatus.CLOSING;
             logDecision("LIFECYCLE", "Closing initiated", Map.of("positions", positions.size()));
+            exitOrders = buildExitOrders();
         } finally {
             stampedLock.unlockWrite(stamp);
         }
 
         // Execute exit orders OUTSIDE the lock to avoid holding it during I/O
-        // #TODO Phase 6.2 -- StrategyEngine.closeStrategy will orchestrate the actual exit
+        if (!exitOrders.isEmpty() && journaledMultiLegExecutor != null) {
+            JournaledMultiLegExecutor.MultiLegResult result =
+                    journaledMultiLegExecutor.executeParallel(exitOrders, id, "EXIT", OrderPriority.STRATEGY_EXIT);
+
+            if (!result.isSuccess()) {
+                logDecision(
+                        "EXIT_FAILED",
+                        "Exit order execution failed, manual intervention needed",
+                        Map.of("groupId", result.getGroupId()));
+            }
+        }
+    }
+
+    /**
+     * Builds exit orders for all current positions. Each position gets an opposite
+     * order (BUY for short positions, SELL for long positions) to close it.
+     */
+    protected List<OrderRequest> buildExitOrders() {
+        List<OrderRequest> exitOrders = new ArrayList<>();
+        for (Position pos : positions) {
+            if (pos.getQuantity() == 0 || pos.getInstrumentToken() == null) continue;
+            exitOrders.add(OrderRequest.builder()
+                    .instrumentToken(pos.getInstrumentToken())
+                    .tradingSymbol(pos.getTradingSymbol())
+                    .exchange(pos.getExchange())
+                    .side(pos.getQuantity() > 0 ? OrderSide.SELL : OrderSide.BUY)
+                    .type(OrderType.MARKET)
+                    .quantity(Math.abs(pos.getQuantity()))
+                    .strategyId(id)
+                    .build());
+        }
+        return exitOrders;
+    }
+
+    // ========================
+    // IMMEDIATE ENTRY (from FE-sent leg configs)
+    // ========================
+
+    /**
+     * Executes entry orders immediately from FE-sent leg configs, bypassing
+     * the tick-driven shouldEnter/buildEntryOrders loop. Called by StrategyEngine
+     * when config.immediateEntry is true (all FIXED legs + LIVE trading mode).
+     *
+     * <p>Each leg is resolved to a Kite instrument via InstrumentService for
+     * proper tradingSymbol + instrumentToken. On success, transitions to ACTIVE.
+     */
+    public void executeImmediateEntry() {
+        List<NewLegDefinition> legDefs = config.getLegConfigs();
+        if (legDefs == null || legDefs.isEmpty()) {
+            logDecision("ENTRY_SKIP", "No leg configs for immediate entry", Map.of());
+            return;
+        }
+
+        List<OrderRequest> orders = buildOrdersFromLegConfigs(legDefs);
+        if (orders.isEmpty()) {
+            logDecision("ENTRY_SKIP", "No orders built from leg configs", Map.of());
+            return;
+        }
+
+        logDecision("ENTRY_EXEC", "Executing immediate entry", Map.of("legs", orders.size()));
+
+        JournaledMultiLegExecutor.MultiLegResult result =
+                journaledMultiLegExecutor.executeParallel(orders, id, "ENTRY", OrderPriority.STRATEGY_ENTRY);
+
+        if (!result.isSuccess()) {
+            logDecision(
+                    "ENTRY_FAILED", "Immediate entry failed, staying ARMED", Map.of("groupId", result.getGroupId()));
+            return;
+        }
+
+        long stamp = stampedLock.writeLock();
+        try {
+            this.status = StrategyStatus.ACTIVE;
+            this.entryTime = LocalDateTime.now();
+        } finally {
+            stampedLock.unlockWrite(stamp);
+        }
+    }
+
+    /**
+     * Builds OrderRequests from FE-sent leg definitions. Each leg is resolved
+     * to a Kite instrument via InstrumentService for proper tradingSymbol + token.
+     * Quantity = leg.lots * config.lots * instrument.lotSize.
+     *
+     * <p>Returns an empty list if any instrument cannot be resolved (all-or-nothing).
+     */
+    private List<OrderRequest> buildOrdersFromLegConfigs(List<NewLegDefinition> legDefs) {
+        List<OrderRequest> orders = new ArrayList<>();
+        LocalDate expiry = config.getExpiry();
+        String underlying = config.getUnderlying();
+
+        for (NewLegDefinition leg : legDefs) {
+            Optional<Instrument> instrumentOpt =
+                    instrumentService.resolveOption(underlying, expiry, leg.getStrike(), leg.getOptionType());
+
+            if (instrumentOpt.isEmpty()) {
+                logDecision(
+                        "ENTRY_ERROR",
+                        "Could not resolve instrument",
+                        Map.of(
+                                "strike", leg.getStrike().toString(),
+                                "type", leg.getOptionType().name(),
+                                "underlying", underlying,
+                                "expiry", expiry.toString()));
+                // Fail all legs if any instrument can't be resolved
+                return List.of();
+            }
+
+            Instrument instrument = instrumentOpt.get();
+            int legLots = leg.getLots() != null ? leg.getLots() : 1;
+            int quantity = legLots * config.getLots() * instrument.getLotSize();
+
+            orders.add(OrderRequest.builder()
+                    .instrumentToken(instrument.getToken())
+                    .tradingSymbol(instrument.getTradingSymbol())
+                    .exchange(instrument.getExchange())
+                    .side(leg.getSide())
+                    .type(OrderType.MARKET)
+                    .quantity(quantity)
+                    .strategyId(id)
+                    .build());
+        }
+        return orders;
     }
 
     // ========================
@@ -346,9 +483,17 @@ public abstract class BaseStrategy implements TradingStrategy {
 
         logDecision("ENTRY_EXEC", "Executing entry orders", Map.of("legs", orders.size()));
 
-        // #TODO Phase 6.2 -- StrategyEngine will call multiLegExecutor here
-        // For now, mark that entry was triggered. Actual execution needs StrategyContext
-        // with position sizer and lot scaling.
+        // Execute entry orders via WAL-journaled parallel executor
+        JournaledMultiLegExecutor.MultiLegResult result =
+                journaledMultiLegExecutor.executeParallel(orders, id, "ENTRY", OrderPriority.STRATEGY_ENTRY);
+
+        if (!result.isSuccess()) {
+            logDecision(
+                    "ENTRY_FAILED",
+                    "Entry order execution failed, staying ARMED",
+                    Map.of("groupId", result.getGroupId()));
+            return;
+        }
 
         long stamp = stampedLock.writeLock();
         try {

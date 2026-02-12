@@ -286,6 +286,24 @@ public class InstrumentService {
     }
 
     /**
+     * Resolves an option instrument by underlying, expiry, strike, and option type.
+     * Used to obtain the Kite tradingSymbol and instrumentToken needed for order placement.
+     *
+     * @param underlying the root underlying, e.g., "NIFTY", "BANKNIFTY"
+     * @param expiry     the expiry date
+     * @param strike     the strike price
+     * @param optionType CE or PE
+     * @return the matching instrument, or empty if not found
+     */
+    public Optional<Instrument> resolveOption(
+            String underlying, LocalDate expiry, BigDecimal strike, InstrumentType optionType) {
+        return getOptionsForUnderlying(underlying, expiry).stream()
+                .filter(i -> i.getStrike() != null && i.getStrike().compareTo(strike) == 0)
+                .filter(i -> optionType == i.getType())
+                .findFirst();
+    }
+
+    /**
      * Returns all underlying names that have NFO derivatives in the cache.
      *
      * @return set of underlying names (e.g., "NIFTY", "BANKNIFTY", "RELIANCE")

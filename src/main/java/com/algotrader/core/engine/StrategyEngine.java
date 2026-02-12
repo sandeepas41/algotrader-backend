@@ -105,7 +105,10 @@ public class StrategyEngine {
         String strategyId = strategy.getId();
 
         StrategyContext context = buildContext();
-        strategy.setServices(context.getEventPublisherHelper(), context.getJournaledMultiLegExecutor());
+        strategy.setServices(
+                context.getEventPublisherHelper(),
+                context.getJournaledMultiLegExecutor(),
+                context.getInstrumentService());
 
         // Atomic registration: if ID collision (practically impossible with UUID), fail fast
         BaseStrategy existing = activeStrategies.putIfAbsent(strategyId, strategy);
@@ -119,6 +122,13 @@ public class StrategyEngine {
 
         if (autoArm) {
             armStrategy(strategyId);
+        }
+
+        // If immediate entry with fixed legs, execute entry right after arming
+        if (config.isImmediateEntry() && strategy.getStatus() == StrategyStatus.ARMED) {
+            withWriteLock(strategyId, () -> {
+                strategy.executeImmediateEntry();
+            });
         }
 
         return strategyId;
@@ -177,7 +187,6 @@ public class StrategyEngine {
         withWriteLock(strategyId, () -> {
             BaseStrategy strategy = getOrThrow(strategyId);
             strategy.initiateClose();
-            // #TODO Phase 6.2 follow-up: Orchestrate actual exit order execution via multiLegExecutor
         });
     }
 

@@ -1,8 +1,10 @@
 package com.algotrader.strategy.base;
 
+import com.algotrader.domain.model.NewLegDefinition;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.util.List;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.experimental.SuperBuilder;
@@ -56,4 +58,16 @@ public class BaseStrategyConfig {
      * Null = disabled. Example: 0.5 means auto-pause if net delta > 0.5 or < -0.5.
      */
     private BigDecimal autoPauseDeltaThreshold;
+
+    /**
+     * FE-sent leg definitions for immediate entry (FIXED strikes + LIVE mode).
+     * Null/empty for autonomous strategies that use the tick-driven shouldEnter/buildEntryOrders loop.
+     */
+    private List<NewLegDefinition> legConfigs;
+
+    /**
+     * If true, execute entry orders immediately on deploy (skip shouldEnter/tick loop).
+     * Set automatically when FE sends all FIXED legs with LIVE trading mode.
+     */
+    private boolean immediateEntry;
 }
