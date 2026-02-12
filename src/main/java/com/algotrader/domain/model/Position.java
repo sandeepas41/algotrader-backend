@@ -3,8 +3,10 @@ package com.algotrader.domain.model;
 import com.algotrader.domain.enums.PositionType;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
  * An open or closed position in the trading account.
@@ -18,6 +20,8 @@ import lombok.Data;
  */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class Position {
 
     private String id;

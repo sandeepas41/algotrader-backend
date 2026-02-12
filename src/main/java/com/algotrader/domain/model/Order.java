@@ -6,8 +6,10 @@ import com.algotrader.domain.enums.OrderStatus;
 import com.algotrader.domain.enums.OrderType;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
  * A trading order (pending, active, or completed).
@@ -22,6 +24,8 @@ import lombok.Data;
  */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class Order {
 
     private String id;
