@@ -3,6 +3,7 @@ package com.algotrader.unit.broker;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.algotrader.broker.KiteMarketDataService;
+import com.algotrader.broker.KiteOrderUpdateHandler;
 import com.algotrader.config.KiteConfig;
 import java.lang.reflect.Method;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,6 +30,9 @@ class KiteMarketDataServiceTest {
     @Mock
     private ApplicationEventPublisher applicationEventPublisher;
 
+    @Mock
+    private KiteOrderUpdateHandler kiteOrderUpdateHandler;
+
     private KiteConfig kiteConfig;
     private KiteMarketDataService kiteMarketDataService;
 
@@ -37,7 +41,8 @@ class KiteMarketDataServiceTest {
         kiteConfig = new KiteConfig();
         kiteConfig.setApiKey("test_key");
         kiteConfig.setApiSecret("test_secret");
-        kiteMarketDataService = new KiteMarketDataService(kiteConfig, applicationEventPublisher);
+        kiteMarketDataService =
+                new KiteMarketDataService(kiteConfig, applicationEventPublisher, kiteOrderUpdateHandler);
     }
 
     @Test

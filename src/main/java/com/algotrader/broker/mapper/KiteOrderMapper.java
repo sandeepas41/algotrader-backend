@@ -136,7 +136,7 @@ public class KiteOrderMapper {
      * <p>Kite uses: OPEN, COMPLETE, CANCELLED, REJECTED, TRIGGER PENDING, UPDATE, PUT ORDER REQ RECEIVED.
      * We treat UPDATE and PUT ORDER REQ RECEIVED as OPEN (order is active).
      */
-    OrderStatus mapStatus(String kiteStatus) {
+    public OrderStatus mapStatus(String kiteStatus) {
         if (kiteStatus == null) {
             return OrderStatus.PENDING;
         }

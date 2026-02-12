@@ -9,6 +9,7 @@ import com.zerodhatech.ticker.KiteTicker;
 import com.zerodhatech.ticker.OnConnect;
 import com.zerodhatech.ticker.OnDisconnect;
 import com.zerodhatech.ticker.OnError;
+import com.zerodhatech.ticker.OnOrderUpdate;
 import com.zerodhatech.ticker.OnTicks;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -62,6 +63,7 @@ public class KiteMarketDataService {
 
     private final KiteConfig kiteConfig;
     private final ApplicationEventPublisher applicationEventPublisher;
+    private final KiteOrderUpdateHandler kiteOrderUpdateHandler;
 
     /** Tracks all instrument tokens currently subscribed on the WebSocket. */
     private final Set<Long> subscribedTokens = ConcurrentHashMap.newKeySet();
@@ -76,9 +78,13 @@ public class KiteMarketDataService {
     /** Consecutive reconnection failure count (reset on successful connect). */
     private final AtomicInteger reconnectAttempts = new AtomicInteger(0);
 
-    public KiteMarketDataService(KiteConfig kiteConfig, ApplicationEventPublisher applicationEventPublisher) {
+    public KiteMarketDataService(
+            KiteConfig kiteConfig,
+            ApplicationEventPublisher applicationEventPublisher,
+            KiteOrderUpdateHandler kiteOrderUpdateHandler) {
         this.kiteConfig = kiteConfig;
         this.applicationEventPublisher = applicationEventPublisher;
+        this.kiteOrderUpdateHandler = kiteOrderUpdateHandler;
     }
 
     /**
@@ -257,6 +263,13 @@ public class KiteMarketDataService {
                 log.error("Kite ticker error: {}", error);
             }
         });
+
+        kiteTicker.setOnOrderUpdateListener(new OnOrderUpdate() {
+            @Override
+            public void onOrderUpdate(com.zerodhatech.models.Order order) {
+                onKiteOrderUpdate(order);
+            }
+        });
     }
 
     private void onConnect() {
@@ -299,6 +312,25 @@ public class KiteMarketDataService {
             kiteTicker.subscribe(tokens);
             kiteTicker.setMode(tokens, KiteTicker.modeFull);
             log.info("Resubscribed {} instruments", tokens.size());
+        }
+    }
+
+    /**
+     * Callback for incoming order status updates from Kite WebSocket.
+     * Delegates to {@link KiteOrderUpdateHandler} for safe processing of fills and rejections.
+     *
+     * <p>Wrapped in try/catch so order update processing failures never crash
+     * the WebSocket connection (which also carries market data ticks).
+     */
+    private void onKiteOrderUpdate(com.zerodhatech.models.Order kiteOrder) {
+        try {
+            kiteOrderUpdateHandler.handleOrderUpdate(kiteOrder);
+        } catch (Exception e) {
+            log.error(
+                    "Error processing order update for orderId={}: {}",
+                    kiteOrder != null ? kiteOrder.orderId : "null",
+                    e.getMessage(),
+                    e);
         }
     }
 

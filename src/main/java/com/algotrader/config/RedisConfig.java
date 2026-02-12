@@ -21,6 +21,7 @@ import org.springframework.data.redis.serializer.StringRedisSerializer;
  *   algo:positions:all         → Set of position IDs
  *   algo:order:{id}           → Order JSON
  *   algo:orders:pending        → Set of pending order IDs
+ *   algo:order:broker-idx:{brokerOrderId} → Internal order ID (reverse lookup)
  *   algo:kite:session:{userId} → Session JSON (TTL aligned to 6 AM IST)
  *   algo:instrument:{token}    → Instrument JSON
  *   algo:daily:pnl:{date}      → Daily P&L JSON
@@ -40,6 +41,9 @@ public class RedisConfig {
 
     public static final String KEY_SET_POSITIONS_ALL = KEY_PREFIX + "positions:all";
     public static final String KEY_SET_ORDERS_PENDING = KEY_PREFIX + "orders:pending";
+
+    /** Reverse lookup: brokerOrderId → internal order UUID. */
+    public static final String KEY_BROKER_ORDER_INDEX = KEY_PREFIX + "order:broker-idx:";
 
     public static final Duration DEFAULT_TTL = Duration.ofHours(24);
 

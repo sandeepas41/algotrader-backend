@@ -4,10 +4,13 @@ import com.algotrader.broker.BrokerGateway;
 import com.algotrader.domain.enums.OrderStatus;
 import com.algotrader.domain.model.Order;
 import com.algotrader.event.EventPublisherHelper;
+import com.algotrader.repository.redis.OrderRedisRepository;
 import java.time.LocalDateTime;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Component;
 
 /**
@@ -26,7 +29,7 @@ import org.springframework.stereotype.Component;
  * #TODO Task 8.2 -- Add /app/orders/place STOMP destination for frontend order submission
  */
 @Component
-public class OrderQueueProcessor {
+public class OrderQueueProcessor implements SmartLifecycle {
 
     private static final Logger log = LoggerFactory.getLogger(OrderQueueProcessor.class);
 
@@ -34,6 +37,7 @@ public class OrderQueueProcessor {
     private final BrokerGateway brokerGateway;
     private final EventPublisherHelper eventPublisherHelper;
     private final IdempotencyService idempotencyService;
+    private final OrderRedisRepository orderRedisRepository;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private Thread consumerThread;
@@ -42,17 +46,20 @@ public class OrderQueueProcessor {
             OrderQueue orderQueue,
             BrokerGateway brokerGateway,
             EventPublisherHelper eventPublisherHelper,
-            IdempotencyService idempotencyService) {
+            IdempotencyService idempotencyService,
+            OrderRedisRepository orderRedisRepository) {
         this.orderQueue = orderQueue;
         this.brokerGateway = brokerGateway;
         this.eventPublisherHelper = eventPublisherHelper;
         this.idempotencyService = idempotencyService;
+        this.orderRedisRepository = orderRedisRepository;
     }
 
     /**
-     * Starts the consumer thread. Called on application startup.
+     * Starts the consumer thread. Called on application startup via SmartLifecycle.
      * The thread loops on {@code orderQueue.take()} until {@link #stop()} is called.
      */
+    @Override
     public void start() {
         if (running.compareAndSet(false, true)) {
             consumerThread = new Thread(this::processLoop, "order-queue-processor");
@@ -64,8 +71,9 @@ public class OrderQueueProcessor {
 
     /**
      * Stops the consumer thread gracefully. Any in-flight order completes before
-     * the thread exits. Called during graceful shutdown.
+     * the thread exits. Called during graceful shutdown via SmartLifecycle.
      */
+    @Override
     public void stop() {
         if (running.compareAndSet(true, false)) {
             if (consumerThread != null) {
@@ -76,8 +84,20 @@ public class OrderQueueProcessor {
     }
 
     /** Returns whether the processor is currently running. */
+    @Override
     public boolean isRunning() {
         return running.get();
+    }
+
+    @Override
+    public int getPhase() {
+        // Start early so the queue is draining before strategies begin evaluating
+        return 0;
+    }
+
+    @Override
+    public boolean isAutoStartup() {
+        return true;
     }
 
     /**
@@ -130,6 +150,10 @@ public class OrderQueueProcessor {
             // Mark idempotency key after successful placement
             idempotencyService.markProcessed(orderRequest);
 
+            // Persist to Redis BEFORE publishing event so downstream handlers
+            // (e.g., KiteOrderUpdateHandler) can look up the order by brokerOrderId
+            orderRedisRepository.save(order);
+
             eventPublisherHelper.publishOrderPlaced(this, order);
 
             log.info(
@@ -173,6 +197,7 @@ public class OrderQueueProcessor {
      */
     private Order toOrder(OrderRequest orderRequest) {
         return Order.builder()
+                .id(UUID.randomUUID().toString())
                 .instrumentToken(orderRequest.getInstrumentToken())
                 .tradingSymbol(orderRequest.getTradingSymbol())
                 .exchange(orderRequest.getExchange())

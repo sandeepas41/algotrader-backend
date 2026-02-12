@@ -21,6 +21,7 @@ import com.algotrader.oms.OrderQueue;
 import com.algotrader.oms.OrderQueueProcessor;
 import com.algotrader.oms.OrderRequest;
 import com.algotrader.oms.PrioritizedOrder;
+import com.algotrader.repository.redis.OrderRedisRepository;
 import java.math.BigDecimal;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -39,6 +40,7 @@ class OrderQueueProcessorTest {
     private BrokerGateway brokerGateway;
     private EventPublisherHelper eventPublisherHelper;
     private IdempotencyService idempotencyService;
+    private OrderRedisRepository orderRedisRepository;
     private OrderQueueProcessor orderQueueProcessor;
 
     @BeforeEach
@@ -47,9 +49,10 @@ class OrderQueueProcessorTest {
         brokerGateway = mock(BrokerGateway.class);
         eventPublisherHelper = mock(EventPublisherHelper.class);
         idempotencyService = mock(IdempotencyService.class);
+        orderRedisRepository = mock(OrderRedisRepository.class);
 
-        orderQueueProcessor =
-                new OrderQueueProcessor(orderQueue, brokerGateway, eventPublisherHelper, idempotencyService);
+        orderQueueProcessor = new OrderQueueProcessor(
+                orderQueue, brokerGateway, eventPublisherHelper, idempotencyService, orderRedisRepository);
     }
 
     private PrioritizedOrder samplePrioritizedOrder() {
@@ -92,6 +95,36 @@ class OrderQueueProcessorTest {
             assertThat(placedOrder.getBrokerOrderId()).isEqualTo("KT-12345");
             assertThat(placedOrder.getStatus()).isEqualTo(OrderStatus.OPEN);
             assertThat(placedOrder.getPlacedAt()).isNotNull();
+        }
+
+        @Test
+        @DisplayName("Placed order has non-null UUID id")
+        void placedOrderHasNonNullId() {
+            when(brokerGateway.placeOrder(any(Order.class))).thenReturn("KT-12345");
+
+            orderQueueProcessor.processOrder(samplePrioritizedOrder());
+
+            ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+            verify(eventPublisherHelper).publishOrderPlaced(any(), orderCaptor.capture());
+
+            Order placedOrder = orderCaptor.getValue();
+            assertThat(placedOrder.getId()).isNotNull();
+            assertThat(placedOrder.getId()).hasSize(36); // UUID format
+        }
+
+        @Test
+        @DisplayName("Placed order is saved to Redis before event is published")
+        void placedOrderSavedToRedis() {
+            when(brokerGateway.placeOrder(any(Order.class))).thenReturn("KT-12345");
+
+            orderQueueProcessor.processOrder(samplePrioritizedOrder());
+
+            ArgumentCaptor<Order> orderCaptor = ArgumentCaptor.forClass(Order.class);
+            verify(orderRedisRepository).save(orderCaptor.capture());
+
+            Order savedOrder = orderCaptor.getValue();
+            assertThat(savedOrder.getBrokerOrderId()).isEqualTo("KT-12345");
+            assertThat(savedOrder.getStatus()).isEqualTo(OrderStatus.OPEN);
         }
 
         @Test
