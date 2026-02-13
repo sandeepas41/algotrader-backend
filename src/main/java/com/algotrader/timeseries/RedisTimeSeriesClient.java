@@ -1,5 +1,14 @@
 package com.algotrader.timeseries;
 
+import io.lettuce.core.api.async.RedisAsyncCommands;
+import io.lettuce.core.codec.ByteArrayCodec;
+import io.lettuce.core.output.CommandOutput;
+import io.lettuce.core.output.IntegerOutput;
+import io.lettuce.core.output.NestedMultiOutput;
+import io.lettuce.core.output.StatusOutput;
+import io.lettuce.core.protocol.CommandArgs;
+import io.lettuce.core.protocol.ProtocolKeyword;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
@@ -13,7 +22,13 @@ import org.springframework.stereotype.Component;
  * <p>Redis TimeSeries is a Redis module that stores timestamped numeric data and
  * supports server-side OHLC aggregation via {@code TS.RANGE ... AGGREGATION}.
  * Since Spring Data Redis does not have native TS command support, this client
- * uses {@link StringRedisTemplate#execute} to send raw commands.
+ * dispatches commands via Lettuce's native API with proper output types.
+ *
+ * <p>Spring Data's {@code connection.execute()} defaults to {@code ByteArrayOutput}
+ * which cannot handle integer responses (TS.ADD returns a long timestamp). We use
+ * Lettuce's {@code dispatch()} directly with the correct output type for each command:
+ * {@code IntegerOutput} for TS.ADD, {@code StatusOutput} for TS.CREATE, and
+ * {@code NestedMultiOutput} for TS.RANGE.
  *
  * <p>Key naming convention follows the project's {@code algo:} prefix:
  * <ul>
@@ -35,6 +50,30 @@ public class RedisTimeSeriesClient {
     /** Prefix for volume time series keys. */
     public static final String KEY_PREFIX_VOL = "algo:ts:vol:";
 
+    private static final ByteArrayCodec CODEC = ByteArrayCodec.INSTANCE;
+
+    /**
+     * Custom protocol keywords for Redis TimeSeries module commands.
+     * Lettuce requires a ProtocolKeyword to dispatch non-standard commands.
+     */
+    private enum TsCommand implements ProtocolKeyword {
+        TS_ADD,
+        TS_CREATE,
+        TS_RANGE;
+
+        private final byte[] bytes;
+
+        TsCommand() {
+            // TS_ADD → "TS.ADD", TS_CREATE → "TS.CREATE", TS_RANGE → "TS.RANGE"
+            this.bytes = name().replace('_', '.').getBytes(StandardCharsets.US_ASCII);
+        }
+
+        @Override
+        public byte[] getBytes() {
+            return bytes;
+        }
+    }
+
     private final StringRedisTemplate stringRedisTemplate;
 
     public RedisTimeSeriesClient(StringRedisTemplate stringRedisTemplate) {
@@ -53,21 +92,22 @@ public class RedisTimeSeriesClient {
         try {
             stringRedisTemplate.execute(
                     connection -> {
-                        connection
-                                .commands()
-                                .execute(
-                                        "TS.CREATE",
-                                        key.getBytes(),
-                                        "RETENTION".getBytes(),
-                                        String.valueOf(retentionMs).getBytes(),
-                                        "DUPLICATE_POLICY".getBytes(),
-                                        duplicatePolicy.getBytes());
+                        dispatch(
+                                connection,
+                                TsCommand.TS_CREATE,
+                                new StatusOutput<>(CODEC),
+                                new CommandArgs<>(CODEC)
+                                        .add(key.getBytes())
+                                        .add("RETENTION".getBytes())
+                                        .add(String.valueOf(retentionMs).getBytes())
+                                        .add("DUPLICATE_POLICY".getBytes())
+                                        .add(duplicatePolicy.getBytes()));
                         return null;
                     },
                     true);
         } catch (Exception e) {
             // Silently ignore "key already exists" — TS.CREATE is idempotent in our usage
-            if (!e.getMessage().contains("key already exists")) {
+            if (e.getMessage() == null || !e.getMessage().contains("key already exists")) {
                 log.warn("TS.CREATE failed for key {}: {}", key, e.getMessage());
             }
         }
@@ -84,13 +124,14 @@ public class RedisTimeSeriesClient {
         try {
             stringRedisTemplate.execute(
                     connection -> {
-                        connection
-                                .commands()
-                                .execute(
-                                        "TS.ADD",
-                                        key.getBytes(),
-                                        String.valueOf(epochMs).getBytes(),
-                                        String.valueOf(value).getBytes());
+                        dispatch(
+                                connection,
+                                TsCommand.TS_ADD,
+                                new IntegerOutput<>(CODEC),
+                                new CommandArgs<>(CODEC)
+                                        .add(key.getBytes())
+                                        .add(String.valueOf(epochMs).getBytes())
+                                        .add(String.valueOf(value).getBytes()));
                         return null;
                     },
                     true);
@@ -113,7 +154,6 @@ public class RedisTimeSeriesClient {
      * @param bucketDurationMs aggregation bucket size in milliseconds
      * @return list of TimeSeries samples (timestamp + value pairs)
      */
-    @SuppressWarnings("unchecked")
     public List<TsSample> range(
             String key, long fromEpochMs, long toEpochMs, String aggregationType, long bucketDurationMs) {
 
@@ -122,16 +162,17 @@ public class RedisTimeSeriesClient {
         try {
             List<Object> rawResults = stringRedisTemplate.execute(
                     connection -> {
-                        return (List<Object>) connection
-                                .commands()
-                                .execute(
-                                        "TS.RANGE",
-                                        key.getBytes(),
-                                        String.valueOf(fromEpochMs).getBytes(),
-                                        String.valueOf(toEpochMs).getBytes(),
-                                        "AGGREGATION".getBytes(),
-                                        aggregationType.getBytes(),
-                                        String.valueOf(bucketDurationMs).getBytes());
+                        return dispatch(
+                                connection,
+                                TsCommand.TS_RANGE,
+                                new NestedMultiOutput<>(CODEC),
+                                new CommandArgs<>(CODEC)
+                                        .add(key.getBytes())
+                                        .add(String.valueOf(fromEpochMs).getBytes())
+                                        .add(String.valueOf(toEpochMs).getBytes())
+                                        .add("AGGREGATION".getBytes())
+                                        .add(aggregationType.getBytes())
+                                        .add(String.valueOf(bucketDurationMs).getBytes()));
                     },
                     true);
 
@@ -146,12 +187,30 @@ public class RedisTimeSeriesClient {
             }
         } catch (Exception e) {
             // Key may not exist yet if no ticks have arrived for this instrument
-            if (!e.getMessage().contains("key does not exist")) {
+            if (e.getMessage() == null || !e.getMessage().contains("key does not exist")) {
                 log.error("TS.RANGE failed for key {}: {}", key, e.getMessage());
             }
         }
 
         return results;
+    }
+
+    /**
+     * Dispatches a Redis TimeSeries command via Lettuce's native API with the correct
+     * output type. Spring Data's connection.execute() defaults to ByteArrayOutput which
+     * cannot handle integer responses from TS.ADD.
+     *
+     * <p>getNativeConnection() returns RedisAsyncCommands, so we get the StatefulConnection
+     * from it and use the synchronous API to dispatch with proper output types.
+     */
+    @SuppressWarnings("unchecked")
+    private <T> T dispatch(
+            org.springframework.data.redis.connection.RedisConnection connection,
+            ProtocolKeyword command,
+            CommandOutput<byte[], byte[], T> output,
+            CommandArgs<byte[], byte[]> args) {
+        var asyncCommands = (RedisAsyncCommands<byte[], byte[]>) connection.getNativeConnection();
+        return asyncCommands.getStatefulConnection().sync().dispatch(command, output, args);
     }
 
     private long parseLong(Object obj) {

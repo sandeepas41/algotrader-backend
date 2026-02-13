@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -16,8 +17,10 @@ import com.algotrader.domain.enums.OrderStatus;
 import com.algotrader.domain.enums.OrderType;
 import com.algotrader.domain.model.Order;
 import com.algotrader.event.EventPublisherHelper;
+import com.algotrader.exception.BrokerException;
 import com.algotrader.oms.OrderTimeoutMonitor;
 import com.algotrader.repository.redis.OrderRedisRepository;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Collections;
@@ -246,6 +249,61 @@ class OrderTimeoutMonitorTest {
             orderTimeoutMonitor.checkTimeouts();
 
             verify(eventPublisherHelper).publishDecision(any(), eq("ORDER"), anyString(), eq("STR1"), any(Map.class));
+        }
+    }
+
+    @Nested
+    @DisplayName("Broker Cancel Failure Recovery")
+    class BrokerCancelFailureRecovery {
+
+        @Test
+        @DisplayName("Order marked CANCELLED locally when broker says order not found")
+        void orderNotFoundOnBrokerStillCancelledLocally() {
+            LocalDateTime now = LocalDateTime.now();
+            Order order = orderOfType(OrderType.MARKET, now.minusSeconds(11));
+
+            when(orderRedisRepository.findPending()).thenReturn(List.of(order));
+            doThrow(new BrokerException("Order cancellation failed: Couldn't find that order_id"))
+                    .when(brokerGateway)
+                    .cancelOrder("KT-001");
+
+            orderTimeoutMonitor.checkTimeouts();
+
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.CANCELLED);
+            verify(orderRedisRepository).save(order);
+            verify(eventPublisherHelper).publishOrderCancelled(any(), eq(order), eq(OrderStatus.OPEN));
+        }
+
+        @Test
+        @DisplayName("Order marked CANCELLED locally when circuit breaker is open")
+        void circuitBreakerOpenStillCancelledLocally() {
+            LocalDateTime now = LocalDateTime.now();
+            Order order = orderOfType(OrderType.MARKET, now.minusSeconds(11));
+
+            when(orderRedisRepository.findPending()).thenReturn(List.of(order));
+            doThrow(mock(CallNotPermittedException.class)).when(brokerGateway).cancelOrder("KT-001");
+
+            orderTimeoutMonitor.checkTimeouts();
+
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.CANCELLED);
+            verify(orderRedisRepository).save(order);
+            verify(eventPublisherHelper).publishOrderCancelled(any(), eq(order), eq(OrderStatus.OPEN));
+        }
+
+        @Test
+        @DisplayName("Unknown broker error does NOT cancel order locally")
+        void unknownBrokerErrorDoesNotCancelLocally() {
+            LocalDateTime now = LocalDateTime.now();
+            Order order = orderOfType(OrderType.MARKET, now.minusSeconds(11));
+
+            when(orderRedisRepository.findPending()).thenReturn(List.of(order));
+            doThrow(new BrokerException("Network timeout")).when(brokerGateway).cancelOrder("KT-001");
+
+            orderTimeoutMonitor.checkTimeouts();
+
+            // Order should remain OPEN — not cancelled locally for transient errors
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.OPEN);
+            verify(orderRedisRepository, never()).save(order);
         }
     }
 

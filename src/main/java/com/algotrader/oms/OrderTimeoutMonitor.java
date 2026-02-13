@@ -6,7 +6,9 @@ import com.algotrader.domain.enums.OrderStatus;
 import com.algotrader.domain.enums.OrderType;
 import com.algotrader.domain.model.Order;
 import com.algotrader.event.EventPublisherHelper;
+import com.algotrader.exception.BrokerException;
 import com.algotrader.repository.redis.OrderRedisRepository;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -180,12 +182,43 @@ public class OrderTimeoutMonitor {
                             "orderType", order.getType().name()));
 
         } catch (Exception e) {
-            log.error(
-                    "Failed to cancel timed-out order: brokerOrderId={}, symbol={}",
-                    order.getBrokerOrderId(),
-                    order.getTradingSymbol(),
-                    e);
+            // If the order no longer exists on the broker side ("Couldn't find that order_id")
+            // or the circuit breaker is blocking calls, mark it CANCELLED locally to stop the
+            // infinite retry loop that would otherwise keep tripping the circuit breaker.
+            if (isOrderNotFoundOnBroker(e) || e instanceof CallNotPermittedException) {
+                log.warn(
+                        "Marking timed-out order as CANCELLED locally (broker cancel failed): "
+                                + "brokerOrderId={}, symbol={}, reason={}",
+                        order.getBrokerOrderId(),
+                        order.getTradingSymbol(),
+                        e.getMessage());
+
+                OrderStatus previousStatus = order.getStatus();
+                order.setStatus(OrderStatus.CANCELLED);
+                order.setUpdatedAt(now);
+                orderRedisRepository.save(order);
+                eventPublisherHelper.publishOrderCancelled(this, order, previousStatus);
+            } else {
+                log.error(
+                        "Failed to cancel timed-out order: brokerOrderId={}, symbol={}",
+                        order.getBrokerOrderId(),
+                        order.getTradingSymbol(),
+                        e);
+            }
         }
+    }
+
+    /**
+     * Checks if the exception indicates the order no longer exists on the broker side.
+     * Kite returns "Couldn't find that order_id" when the order is from a previous session
+     * or has already been terminal-stated. Wrapping BrokerException carries this message.
+     */
+    private boolean isOrderNotFoundOnBroker(Exception e) {
+        if (e instanceof BrokerException) {
+            String msg = e.getMessage();
+            return msg != null && msg.contains("Couldn't find");
+        }
+        return false;
     }
 
     private String nullSafe(String value) {
