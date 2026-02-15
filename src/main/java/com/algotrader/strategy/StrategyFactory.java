@@ -3,6 +3,7 @@ package com.algotrader.strategy;
 import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.strategy.base.BaseStrategy;
 import com.algotrader.strategy.base.BaseStrategyConfig;
+import com.algotrader.strategy.base.PositionalStrategyConfig;
 import com.algotrader.strategy.impl.BearCallSpreadConfig;
 import com.algotrader.strategy.impl.BearCallSpreadStrategy;
 import com.algotrader.strategy.impl.BearPutSpreadConfig;
@@ -13,6 +14,7 @@ import com.algotrader.strategy.impl.BullPutSpreadConfig;
 import com.algotrader.strategy.impl.BullPutSpreadStrategy;
 import com.algotrader.strategy.impl.CalendarSpreadConfig;
 import com.algotrader.strategy.impl.CalendarSpreadStrategy;
+import com.algotrader.strategy.impl.CustomStrategy;
 import com.algotrader.strategy.impl.DiagonalSpreadConfig;
 import com.algotrader.strategy.impl.DiagonalSpreadStrategy;
 import com.algotrader.strategy.impl.IronButterflyConfig;
@@ -84,9 +86,7 @@ public class StrategyFactory {
             case CE_BUY, CE_SELL, PE_BUY, PE_SELL ->
                 new NakedOptionStrategy(id, name, type, asConfig(config, NakedOptionConfig.class));
             case LONG_STRADDLE -> new LongStraddleStrategy(id, name, asConfig(config, LongStraddleConfig.class));
-            case CUSTOM ->
-                throw new UnsupportedOperationException(
-                        "CUSTOM strategy type requires user-defined configuration. See PLAN.md for implementation.");
+            case CUSTOM -> new CustomStrategy(id, name, asConfig(config, PositionalStrategyConfig.class));
         };
     }
 

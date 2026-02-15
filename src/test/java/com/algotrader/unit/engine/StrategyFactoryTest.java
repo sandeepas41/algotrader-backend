@@ -8,8 +8,10 @@ import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.strategy.StrategyFactory;
 import com.algotrader.strategy.base.BaseStrategy;
 import com.algotrader.strategy.base.BaseStrategyConfig;
+import com.algotrader.strategy.base.PositionalStrategyConfig;
 import com.algotrader.strategy.impl.BullCallSpreadConfig;
 import com.algotrader.strategy.impl.BullCallSpreadStrategy;
+import com.algotrader.strategy.impl.CustomStrategy;
 import com.algotrader.strategy.impl.IronCondorConfig;
 import com.algotrader.strategy.impl.IronCondorStrategy;
 import com.algotrader.strategy.impl.NakedOptionConfig;
@@ -26,7 +28,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Unit tests for StrategyFactory. Tests implemented types and
- * unimplemented type handling (only CUSTOM remains unimplemented).
+ * unimplemented type handling. All types are now implemented including CUSTOM.
  */
 class StrategyFactoryTest {
 
@@ -48,7 +50,8 @@ class StrategyFactoryTest {
             StrategyType.CE_SELL,
             StrategyType.PE_BUY,
             StrategyType.PE_SELL,
-            StrategyType.LONG_STRADDLE);
+            StrategyType.LONG_STRADDLE,
+            StrategyType.CUSTOM);
 
     @BeforeEach
     void setUp() {
@@ -231,11 +234,23 @@ class StrategyFactoryTest {
         }
 
         @Test
-        @DisplayName("CUSTOM type throws UnsupportedOperationException referencing CUSTOM")
-        void customTypeThrows() {
-            assertThatThrownBy(() -> strategyFactory.create(StrategyType.CUSTOM, "Test", config))
-                    .isInstanceOf(UnsupportedOperationException.class)
-                    .hasMessageContaining("CUSTOM");
+        @DisplayName("CUSTOM type creates CustomStrategy with PositionalStrategyConfig")
+        void customTypeCreatesCustomStrategy() {
+            PositionalStrategyConfig positionalConfig = PositionalStrategyConfig.builder()
+                    .underlying("NIFTY")
+                    .lots(1)
+                    .strikeInterval(BigDecimal.valueOf(50))
+                    .targetPercent(BigDecimal.valueOf(0.5))
+                    .stopLossMultiplier(BigDecimal.valueOf(2.0))
+                    .minDaysToExpiry(1)
+                    .build();
+
+            BaseStrategy strategy = strategyFactory.create(StrategyType.CUSTOM, "Test-Custom", positionalConfig);
+
+            assertThat(strategy).isInstanceOf(CustomStrategy.class);
+            assertThat(strategy.getType()).isEqualTo(StrategyType.CUSTOM);
+            assertThat(strategy.getStatus()).isEqualTo(StrategyStatus.CREATED);
+            assertThat(strategy.getName()).isEqualTo("Test-Custom");
         }
     }
 }

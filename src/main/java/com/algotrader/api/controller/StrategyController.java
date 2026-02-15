@@ -15,6 +15,7 @@ import com.algotrader.strategy.adoption.AdoptionResult;
 import com.algotrader.strategy.adoption.PositionAdoptionService;
 import com.algotrader.strategy.base.BaseStrategy;
 import com.algotrader.strategy.base.BaseStrategyConfig;
+import com.algotrader.strategy.base.PositionalStrategyConfig;
 import com.algotrader.strategy.impl.BearCallSpreadConfig;
 import com.algotrader.strategy.impl.BearPutSpreadConfig;
 import com.algotrader.strategy.impl.BullCallSpreadConfig;
@@ -28,6 +29,7 @@ import com.algotrader.strategy.impl.NakedOptionConfig;
 import com.algotrader.strategy.impl.StraddleConfig;
 import com.algotrader.strategy.impl.StrangleConfig;
 import jakarta.validation.Valid;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -245,10 +247,13 @@ public class StrategyController {
                         .lots(lots)
                         .build();
             case CUSTOM ->
-                BaseStrategyConfig.builder()
+                PositionalStrategyConfig.builder()
                         .underlying(underlying)
                         .expiry(expiry)
                         .lots(lots)
+                        .targetPercent(BigDecimal.valueOf(0.5))
+                        .stopLossMultiplier(BigDecimal.valueOf(2.0))
+                        .minDaysToExpiry(1)
                         .build();
         };
     }

@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.strategy.StrategyFactory;
 import com.algotrader.strategy.base.BaseStrategy;
+import com.algotrader.strategy.base.PositionalStrategyConfig;
 import com.algotrader.strategy.impl.*;
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -136,13 +137,20 @@ class StrategyFactoryTest {
     }
 
     @Test
-    @DisplayName("CUSTOM type throws UnsupportedOperationException")
-    void customTypeThrows() {
-        StrangleConfig config = StrangleConfig.builder().underlying("NIFTY").build();
+    @DisplayName("CUSTOM type creates CustomStrategy")
+    void customTypeCreatesCustomStrategy() {
+        PositionalStrategyConfig config = PositionalStrategyConfig.builder()
+                .underlying("NIFTY")
+                .lots(1)
+                .targetPercent(BigDecimal.valueOf(0.5))
+                .stopLossMultiplier(BigDecimal.valueOf(2.0))
+                .minDaysToExpiry(1)
+                .build();
 
-        assertThatThrownBy(() -> strategyFactory.create(StrategyType.CUSTOM, "Test-Custom", config))
-                .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessageContaining("CUSTOM");
+        BaseStrategy strategy = strategyFactory.create(StrategyType.CUSTOM, "Test-Custom", config);
+
+        assertThat(strategy).isInstanceOf(CustomStrategy.class);
+        assertThat(strategy.getType()).isEqualTo(StrategyType.CUSTOM);
     }
 
     @Test
