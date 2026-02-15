@@ -14,8 +14,6 @@ import org.springframework.stereotype.Repository;
 @Repository
 public interface PositionJpaRepository extends JpaRepository<PositionEntity, String> {
 
-    List<PositionEntity> findByStrategyId(String strategyId);
-
     List<PositionEntity> findByTradingSymbol(String tradingSymbol);
 
     List<PositionEntity> findByClosedAtBetween(LocalDateTime from, LocalDateTime to);

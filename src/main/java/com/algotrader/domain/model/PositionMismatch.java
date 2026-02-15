@@ -22,7 +22,6 @@ public class PositionMismatch {
     private String tradingSymbol;
     private MismatchType type;
     private ResolutionStrategy resolution;
-    private String strategyId;
 
     // Broker state
     private Integer brokerQuantity;

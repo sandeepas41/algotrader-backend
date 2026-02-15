@@ -1,40 +1,40 @@
 package com.algotrader.api.controller;
 
+import com.algotrader.api.dto.response.BrokerPositionResponse;
 import com.algotrader.broker.BrokerGateway;
-import com.algotrader.core.engine.StrategyEngine;
 import com.algotrader.domain.model.Position;
 import com.algotrader.domain.model.ReconciliationResult;
+import com.algotrader.mapper.BrokerPositionMapper;
 import com.algotrader.reconciliation.PositionReconciliationService;
 import com.algotrader.repository.redis.PositionRedisRepository;
-import com.algotrader.strategy.adoption.AdoptionResult;
-import com.algotrader.strategy.adoption.PositionAdoptionService;
-import com.algotrader.strategy.base.BaseStrategy;
+import com.algotrader.strategy.adoption.PositionAllocationService;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * REST endpoints for position management: listing, closing, reconciliation, and adoption.
+ * REST endpoints for position management: listing, broker positions, and reconciliation.
  *
  * <p>Positions are read from Redis (real-time) via PositionRedisRepository.
  * Broker-reported positions come from BrokerGateway.getPositions().
+ *
+ * <p>Adopt/detach operations moved to StrategyController (position-strategy linking
+ * is now managed via strategy legs, not position.strategyId).
  *
  * <p>Endpoints:
  * <ul>
  *   <li>GET /api/positions -- list all positions from Redis</li>
  *   <li>GET /api/positions/broker -- list raw broker positions (day + net)</li>
- *   <li>GET /api/positions/orphans -- list positions not assigned to any strategy</li>
  *   <li>POST /api/positions/reconcile -- trigger on-demand reconciliation</li>
- *   <li>POST /api/positions/{positionId}/adopt -- adopt position into strategy</li>
- *   <li>POST /api/positions/{positionId}/detach -- detach position from strategy</li>
  * </ul>
  */
 @RestController
@@ -45,21 +45,21 @@ public class PositionController {
 
     private final PositionRedisRepository positionRedisRepository;
     private final BrokerGateway brokerGateway;
-    private final PositionAdoptionService positionAdoptionService;
-    private final StrategyEngine strategyEngine;
     private final PositionReconciliationService positionReconciliationService;
+    private final PositionAllocationService positionAllocationService;
+    private final BrokerPositionMapper brokerPositionMapper;
 
     public PositionController(
             PositionRedisRepository positionRedisRepository,
             BrokerGateway brokerGateway,
-            PositionAdoptionService positionAdoptionService,
-            StrategyEngine strategyEngine,
-            PositionReconciliationService positionReconciliationService) {
+            PositionReconciliationService positionReconciliationService,
+            PositionAllocationService positionAllocationService,
+            BrokerPositionMapper brokerPositionMapper) {
         this.positionRedisRepository = positionRedisRepository;
         this.brokerGateway = brokerGateway;
-        this.positionAdoptionService = positionAdoptionService;
-        this.strategyEngine = strategyEngine;
         this.positionReconciliationService = positionReconciliationService;
+        this.positionAllocationService = positionAllocationService;
+        this.brokerPositionMapper = brokerPositionMapper;
     }
 
     /**
@@ -72,21 +72,37 @@ public class PositionController {
     }
 
     /**
-     * Returns raw broker positions grouped by "day" and "net".
+     * Returns broker positions grouped by "day" and "net", enriched with allocatedQuantity
+     * per position (sum of strategy leg quantities linked to each position).
      */
     @GetMapping("/broker")
-    public ResponseEntity<Map<String, List<Position>>> getBrokerPositions() {
+    public ResponseEntity<Map<String, List<BrokerPositionResponse>>> getBrokerPositions() {
         Map<String, List<Position>> positions = brokerGateway.getPositions();
-        return ResponseEntity.ok(positions);
-    }
 
-    /**
-     * Returns positions not assigned to any strategy (orphans).
-     */
-    @GetMapping("/orphans")
-    public ResponseEntity<List<Position>> getOrphanPositions() {
-        List<Position> orphans = positionAdoptionService.findOrphanPositions();
-        return ResponseEntity.ok(orphans);
+        // Collect all position IDs across day + net for a single batch allocation query
+        Set<String> allPositionIds = positions.values().stream()
+                .flatMap(List::stream)
+                .map(Position::getId)
+                .filter(id -> id != null)
+                .collect(Collectors.toSet());
+
+        Map<String, Integer> allocationMap =
+                allPositionIds.isEmpty() ? Map.of() : positionAllocationService.getAllocationMap(allPositionIds);
+
+        // Map each group to enriched DTOs
+        Map<String, List<BrokerPositionResponse>> enriched = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Position>> entry : positions.entrySet()) {
+            List<BrokerPositionResponse> responses = entry.getValue().stream()
+                    .map(position -> {
+                        BrokerPositionResponse brokerPositionResponse = brokerPositionMapper.toResponse(position);
+                        brokerPositionResponse.setAllocatedQuantity(allocationMap.getOrDefault(position.getId(), 0));
+                        return brokerPositionResponse;
+                    })
+                    .toList();
+            enriched.put(entry.getKey(), responses);
+        }
+
+        return ResponseEntity.ok(enriched);
     }
 
     /**
@@ -98,31 +114,5 @@ public class PositionController {
         log.info("Manual position reconciliation triggered");
         ReconciliationResult reconciliationResult = positionReconciliationService.manualReconcile();
         return ResponseEntity.ok(reconciliationResult);
-    }
-
-    /**
-     * Adopts a position into a strategy for tracking and management.
-     * Request body must contain "strategyId".
-     */
-    @PostMapping("/{positionId}/adopt")
-    public ResponseEntity<AdoptionResult> adoptPosition(
-            @PathVariable String positionId, @RequestBody Map<String, String> body) {
-        String strategyId = body.get("strategyId");
-        BaseStrategy strategy = strategyEngine.getStrategy(strategyId);
-        AdoptionResult result = positionAdoptionService.adoptPosition(strategy, positionId);
-        return ResponseEntity.ok(result);
-    }
-
-    /**
-     * Detaches a position from its owning strategy without closing it.
-     * Request body must contain "strategyId".
-     */
-    @PostMapping("/{positionId}/detach")
-    public ResponseEntity<AdoptionResult> detachPosition(
-            @PathVariable String positionId, @RequestBody Map<String, String> body) {
-        String strategyId = body.get("strategyId");
-        BaseStrategy strategy = strategyEngine.getStrategy(strategyId);
-        AdoptionResult result = positionAdoptionService.detachPosition(strategy, positionId);
-        return ResponseEntity.ok(result);
     }
 }

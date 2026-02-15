@@ -80,13 +80,13 @@ public class PnLCalculationService {
     }
 
     /**
-     * Calculates total unrealized P&L for all positions belonging to a strategy.
+     * Calculates total unrealized P&L for a list of positions.
+     * Callers (strategy engine, controllers) pass the strategy's in-memory position list.
      *
-     * @param strategyId the strategy ID
-     * @return total unrealized P&L across all strategy positions
+     * @param positions the positions to calculate P&L for
+     * @return total unrealized P&L
      */
-    public BigDecimal calculateStrategyUnrealizedPnl(String strategyId) {
-        List<Position> positions = positionRedisRepository.findByStrategyId(strategyId);
+    public BigDecimal calculateStrategyUnrealizedPnl(List<Position> positions) {
         return positions.stream()
                 .map(this::calculateUnrealizedPnl)
                 .reduce(BigDecimal.ZERO, BigDecimal::add)

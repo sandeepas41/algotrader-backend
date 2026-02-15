@@ -526,7 +526,6 @@ class StraddleStrategyTest {
     private void addPositionWithPnl(BigDecimal unrealizedPnl, BigDecimal realizedPnl) {
         Position position = Position.builder()
                 .id("POS-" + System.nanoTime())
-                .strategyId(STRATEGY_ID)
                 .tradingSymbol("NIFTY22000CE")
                 .quantity(-75)
                 .unrealizedPnl(unrealizedPnl)
@@ -551,7 +550,6 @@ class StraddleStrategyTest {
 
         Position position = Position.builder()
                 .id("POS-" + System.nanoTime())
-                .strategyId(targetStrategy.getId())
                 .tradingSymbol("NIFTY22000CE")
                 .quantity(1) // quantity=1 so delta * quantity = delta
                 .greeks(greeks)

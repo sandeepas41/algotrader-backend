@@ -1,6 +1,8 @@
 package com.algotrader.api.controller;
 
+import com.algotrader.api.dto.request.AdoptRequest;
 import com.algotrader.api.dto.request.DeployConfigPayload;
+import com.algotrader.api.dto.request.DetachRequest;
 import com.algotrader.core.engine.StrategyEngine;
 import com.algotrader.domain.enums.ActionType;
 import com.algotrader.domain.enums.InstrumentType;
@@ -9,6 +11,8 @@ import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.domain.model.AdjustmentAction;
 import com.algotrader.domain.model.NewLegDefinition;
 import com.algotrader.mapper.JsonHelper;
+import com.algotrader.strategy.adoption.AdoptionResult;
+import com.algotrader.strategy.adoption.PositionAdoptionService;
 import com.algotrader.strategy.base.BaseStrategy;
 import com.algotrader.strategy.base.BaseStrategyConfig;
 import com.algotrader.strategy.impl.BearCallSpreadConfig;
@@ -23,6 +27,7 @@ import com.algotrader.strategy.impl.LongStraddleConfig;
 import com.algotrader.strategy.impl.NakedOptionConfig;
 import com.algotrader.strategy.impl.StraddleConfig;
 import com.algotrader.strategy.impl.StrangleConfig;
+import jakarta.validation.Valid;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -51,6 +56,8 @@ import org.springframework.web.bind.annotation.RestController;
  *   <li>POST /api/strategies/{id}/pause -- pause (freeze, keep positions)</li>
  *   <li>POST /api/strategies/{id}/resume -- resume a paused strategy</li>
  *   <li>POST /api/strategies/{id}/close -- initiate close (exit positions)</li>
+ *   <li>POST /api/strategies/{id}/adopt -- adopt a broker position into the strategy</li>
+ *   <li>POST /api/strategies/{id}/detach -- detach a position from the strategy</li>
  *   <li>POST /api/strategies/{id}/force-adjust -- force manual adjustment</li>
  *   <li>POST /api/strategies/pause-all -- pause all active strategies</li>
  *   <li>DELETE /api/strategies/{id} -- undeploy a closed strategy</li>
@@ -63,9 +70,11 @@ public class StrategyController {
     private static final Logger log = LoggerFactory.getLogger(StrategyController.class);
 
     private final StrategyEngine strategyEngine;
+    private final PositionAdoptionService positionAdoptionService;
 
-    public StrategyController(StrategyEngine strategyEngine) {
+    public StrategyController(StrategyEngine strategyEngine, PositionAdoptionService positionAdoptionService) {
         this.strategyEngine = strategyEngine;
+        this.positionAdoptionService = positionAdoptionService;
     }
 
     /**
@@ -316,6 +325,31 @@ public class StrategyController {
     public ResponseEntity<Map<String, String>> undeployStrategy(@PathVariable String id) {
         strategyEngine.undeployStrategy(id);
         return ResponseEntity.ok(Map.of("message", "Strategy undeployed", "strategyId", id));
+    }
+
+    /**
+     * Adopts a broker position into a strategy by creating a StrategyLeg linked to it.
+     * Validates quantity against unmanaged remainder and option type compatibility.
+     */
+    @PostMapping("/{id}/adopt")
+    public ResponseEntity<AdoptionResult> adoptPosition(
+            @PathVariable String id, @Valid @RequestBody AdoptRequest adoptRequest) {
+        BaseStrategy strategy = strategyEngine.getStrategy(id);
+        AdoptionResult adoptionResult = positionAdoptionService.adoptPosition(
+                strategy, adoptRequest.getPositionId(), adoptRequest.getQuantity());
+        return ResponseEntity.ok(adoptionResult);
+    }
+
+    /**
+     * Detaches a position from a strategy by clearing the leg's positionId.
+     * The leg is preserved; only the position link is severed.
+     */
+    @PostMapping("/{id}/detach")
+    public ResponseEntity<AdoptionResult> detachPosition(
+            @PathVariable String id, @Valid @RequestBody DetachRequest detachRequest) {
+        BaseStrategy strategy = strategyEngine.getStrategy(id);
+        AdoptionResult adoptionResult = positionAdoptionService.detachPosition(strategy, detachRequest.getPositionId());
+        return ResponseEntity.ok(adoptionResult);
     }
 
     private Map<String, Object> buildStrategySummary(String id, BaseStrategy strategy) {

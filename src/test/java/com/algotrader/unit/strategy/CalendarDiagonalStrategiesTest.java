@@ -131,7 +131,6 @@ class CalendarDiagonalStrategiesTest {
 
             Position position = Position.builder()
                     .id("POS-1")
-                    .strategyId("STR-CAL-001")
                     .tradingSymbol("NIFTY22000CE-NEAR")
                     .quantity(-75)
                     .unrealizedPnl(BigDecimal.valueOf(-3500))
@@ -159,7 +158,6 @@ class CalendarDiagonalStrategiesTest {
 
             Position position = Position.builder()
                     .id("POS-1")
-                    .strategyId("STR-CAL-001")
                     .tradingSymbol("NIFTY22000CE-NEAR")
                     .quantity(-75)
                     .unrealizedPnl(BigDecimal.valueOf(-1000))
@@ -270,7 +268,6 @@ class CalendarDiagonalStrategiesTest {
 
             Position position = Position.builder()
                     .id("POS-1")
-                    .strategyId("STR-DG-001")
                     .tradingSymbol("NIFTY22200CE-NEAR")
                     .quantity(-75)
                     .unrealizedPnl(BigDecimal.valueOf(-3500))
@@ -297,7 +294,6 @@ class CalendarDiagonalStrategiesTest {
 
             Position position = Position.builder()
                     .id("POS-1")
-                    .strategyId("STR-DG-001")
                     .tradingSymbol("NIFTY22200CE-NEAR")
                     .quantity(-75)
                     .unrealizedPnl(BigDecimal.valueOf(100))

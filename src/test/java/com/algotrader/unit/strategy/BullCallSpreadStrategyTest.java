@@ -434,7 +434,6 @@ class BullCallSpreadStrategyTest {
     private void addPositionWithPnl(BigDecimal unrealizedPnl, BigDecimal realizedPnl) {
         Position position = Position.builder()
                 .id("POS-" + System.nanoTime())
-                .strategyId(STRATEGY_ID)
                 .tradingSymbol("NIFTY22000CE")
                 .quantity(75)
                 .unrealizedPnl(unrealizedPnl)
@@ -452,7 +451,6 @@ class BullCallSpreadStrategyTest {
             TestableBullCallSpreadStrategy targetStrategy, BigDecimal unrealizedPnl, String symbol, int quantity) {
         Position position = Position.builder()
                 .id("POS-" + System.nanoTime())
-                .strategyId(targetStrategy.getId())
                 .tradingSymbol(symbol)
                 .quantity(quantity)
                 .unrealizedPnl(unrealizedPnl)

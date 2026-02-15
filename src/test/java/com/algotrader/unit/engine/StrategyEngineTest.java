@@ -479,8 +479,8 @@ class StrategyEngineTest {
     class PositionUpdates {
 
         @Test
-        @DisplayName("Position update routes to owning strategy")
-        void positionUpdateRoutesToOwner() {
+        @DisplayName("Position update routes to strategy via reverse index")
+        void positionUpdateRoutesViaReverseIndex() {
             TestStrategy strategy = stubFactory("STR-PU1");
             strategyEngine.deployStrategy(StrategyType.STRADDLE, "PU Test", defaultConfig, false);
             strategy.forceStatus(StrategyStatus.ACTIVE);
@@ -495,6 +495,9 @@ class StrategyEngineTest {
                     .lastUpdated(LocalDateTime.now())
                     .build());
 
+            // Register the link in the reverse index
+            strategyEngine.registerPositionLink("POS-1", "STR-PU1");
+
             // Send position update
             Position updated = Position.builder()
                     .id("POS-1")
@@ -503,7 +506,6 @@ class StrategyEngineTest {
                     .quantity(-50)
                     .unrealizedPnl(BigDecimal.valueOf(500))
                     .lastUpdated(LocalDateTime.now())
-                    .strategyId("STR-PU1")
                     .build();
 
             PositionEvent positionEvent = new PositionEvent(this, updated, PositionEventType.UPDATED);
@@ -515,33 +517,143 @@ class StrategyEngineTest {
         }
 
         @Test
-        @DisplayName("Position update with null strategyId is ignored")
-        void positionUpdateWithNullStrategyIdIgnored() {
-            Position position = Position.builder()
-                    .id("POS-MANUAL")
-                    .tradingSymbol("NIFTY24FEB22000CE")
-                    .instrumentToken(256265L)
-                    .quantity(-50)
-                    .strategyId(null)
-                    .build();
-
-            // Should not throw
-            strategyEngine.onPositionUpdate(new PositionEvent(this, position, PositionEventType.UPDATED));
-        }
-
-        @Test
-        @DisplayName("Position update for unknown strategy is silently ignored")
-        void positionUpdateForUnknownStrategyIgnored() {
+        @DisplayName("Position update for position not in reverse index is silently ignored")
+        void positionUpdateForUnindexedPositionIgnored() {
             Position position = Position.builder()
                     .id("POS-UNKNOWN")
                     .tradingSymbol("NIFTY24FEB22000CE")
                     .instrumentToken(256265L)
                     .quantity(-50)
-                    .strategyId("STR-UNKNOWN")
                     .build();
 
-            // Should not throw
+            // Should not throw -- position not in reverse index
             strategyEngine.onPositionUpdate(new PositionEvent(this, position, PositionEventType.UPDATED));
+        }
+
+        @Test
+        @DisplayName("Position update routes to multiple strategies via reverse index")
+        void positionUpdateRoutesToMultipleStrategies() {
+            TestStrategy s1 = stubFactory("STR-M1");
+            strategyEngine.deployStrategy(StrategyType.STRADDLE, "S1", defaultConfig, false);
+            s1.forceStatus(StrategyStatus.ACTIVE);
+
+            TestStrategy s2 = new TestStrategy("STR-M2", "S2", defaultConfig);
+            when(strategyFactory.create(any(), anyString(), any())).thenReturn(s2);
+            strategyEngine.deployStrategy(StrategyType.STRADDLE, "S2", defaultConfig, false);
+            s2.forceStatus(StrategyStatus.ACTIVE);
+
+            // Both strategies hold the same position
+            Position pos = Position.builder()
+                    .id("POS-SHARED")
+                    .tradingSymbol("NIFTY24FEB22000CE")
+                    .instrumentToken(256265L)
+                    .quantity(-50)
+                    .unrealizedPnl(BigDecimal.ZERO)
+                    .build();
+            s1.addPosition(pos);
+            s2.addPosition(pos);
+
+            // Register both links
+            strategyEngine.registerPositionLink("POS-SHARED", "STR-M1");
+            strategyEngine.registerPositionLink("POS-SHARED", "STR-M2");
+
+            // Send update
+            Position updated = Position.builder()
+                    .id("POS-SHARED")
+                    .tradingSymbol("NIFTY24FEB22000CE")
+                    .instrumentToken(256265L)
+                    .quantity(-50)
+                    .unrealizedPnl(BigDecimal.valueOf(1000))
+                    .build();
+
+            strategyEngine.onPositionUpdate(new PositionEvent(this, updated, PositionEventType.UPDATED));
+
+            // Both strategies should have the updated PnL
+            assertThat(s1.getPositions().get(0).getUnrealizedPnl()).isEqualByComparingTo(BigDecimal.valueOf(1000));
+            assertThat(s2.getPositions().get(0).getUnrealizedPnl()).isEqualByComparingTo(BigDecimal.valueOf(1000));
+        }
+    }
+
+    // ========================
+    // REVERSE INDEX
+    // ========================
+
+    @Nested
+    @DisplayName("Reverse Index")
+    class ReverseIndex {
+
+        @Test
+        @DisplayName("registerPositionLink adds mapping")
+        void registerAddsMapping() {
+            strategyEngine.registerPositionLink("POS-1", "STR-A");
+
+            assertThat(strategyEngine.getStrategiesForPosition("POS-1")).containsExactly("STR-A");
+        }
+
+        @Test
+        @DisplayName("registerPositionLink supports multiple strategies for same position")
+        void registerMultipleStrategies() {
+            strategyEngine.registerPositionLink("POS-1", "STR-A");
+            strategyEngine.registerPositionLink("POS-1", "STR-B");
+
+            assertThat(strategyEngine.getStrategiesForPosition("POS-1")).containsExactlyInAnyOrder("STR-A", "STR-B");
+        }
+
+        @Test
+        @DisplayName("unregisterPositionLink removes mapping")
+        void unregisterRemovesMapping() {
+            strategyEngine.registerPositionLink("POS-1", "STR-A");
+            strategyEngine.unregisterPositionLink("POS-1", "STR-A");
+
+            assertThat(strategyEngine.getStrategiesForPosition("POS-1")).isEmpty();
+        }
+
+        @Test
+        @DisplayName("unregisterPositionLink removes only the specified strategy")
+        void unregisterRemovesOnlySpecified() {
+            strategyEngine.registerPositionLink("POS-1", "STR-A");
+            strategyEngine.registerPositionLink("POS-1", "STR-B");
+
+            strategyEngine.unregisterPositionLink("POS-1", "STR-A");
+
+            assertThat(strategyEngine.getStrategiesForPosition("POS-1")).containsExactly("STR-B");
+        }
+
+        @Test
+        @DisplayName("unregisterPositionLink is safe on missing position")
+        void unregisterSafeOnMissing() {
+            // Should not throw
+            strategyEngine.unregisterPositionLink("POS-NONE", "STR-X");
+            assertThat(strategyEngine.getStrategiesForPosition("POS-NONE")).isEmpty();
+        }
+
+        @Test
+        @DisplayName("populatePositionIndex builds index from links")
+        void populateBuildsIndex() {
+            List<Map.Entry<String, String>> links =
+                    List.of(Map.entry("POS-1", "STR-A"), Map.entry("POS-1", "STR-B"), Map.entry("POS-2", "STR-A"));
+
+            strategyEngine.populatePositionIndex(links);
+
+            assertThat(strategyEngine.getStrategiesForPosition("POS-1")).containsExactlyInAnyOrder("STR-A", "STR-B");
+            assertThat(strategyEngine.getStrategiesForPosition("POS-2")).containsExactly("STR-A");
+        }
+
+        @Test
+        @DisplayName("populatePositionIndex clears previous index")
+        void populateClearsPrevious() {
+            strategyEngine.registerPositionLink("POS-OLD", "STR-OLD");
+
+            strategyEngine.populatePositionIndex(List.of(Map.entry("POS-NEW", "STR-NEW")));
+
+            assertThat(strategyEngine.getStrategiesForPosition("POS-OLD")).isEmpty();
+            assertThat(strategyEngine.getStrategiesForPosition("POS-NEW")).containsExactly("STR-NEW");
+        }
+
+        @Test
+        @DisplayName("getStrategiesForPosition returns empty set for unknown position")
+        void getStrategiesForUnknownPosition() {
+            assertThat(strategyEngine.getStrategiesForPosition("POS-NOPE")).isEmpty();
         }
     }
 

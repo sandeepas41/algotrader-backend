@@ -17,6 +17,7 @@ import com.algotrader.domain.enums.StrategyStatus;
 import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.domain.model.AdjustmentAction;
 import com.algotrader.domain.model.Position;
+import com.algotrader.strategy.adoption.PositionAdoptionService;
 import com.algotrader.strategy.base.BaseStrategy;
 import com.algotrader.strategy.base.BaseStrategyConfig;
 import java.math.BigDecimal;
@@ -47,6 +48,9 @@ class StrategyControllerTest {
     private StrategyEngine strategyEngine;
 
     @Mock
+    private PositionAdoptionService positionAdoptionService;
+
+    @Mock
     private BaseStrategy straddleStrategy;
 
     @Mock
@@ -54,7 +58,7 @@ class StrategyControllerTest {
 
     @BeforeEach
     void setUp() {
-        StrategyController controller = new StrategyController(strategyEngine);
+        StrategyController controller = new StrategyController(strategyEngine, positionAdoptionService);
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new ApiResponseAdvice())
                 .build();

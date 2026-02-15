@@ -473,7 +473,6 @@ class IronCondorStrategyTest {
     private void addPositionWithPnl(BigDecimal unrealizedPnl, BigDecimal realizedPnl) {
         Position position = Position.builder()
                 .id("POS-" + System.nanoTime())
-                .strategyId(STRATEGY_ID)
                 .tradingSymbol("NIFTY22200CE")
                 .quantity(-75)
                 .unrealizedPnl(unrealizedPnl)
@@ -498,7 +497,6 @@ class IronCondorStrategyTest {
             // Short position for getShortCall/getShortPut detection (no greeks = excluded from delta calc)
             Position shortPosition = Position.builder()
                     .id("POS-SHORT-" + System.nanoTime())
-                    .strategyId(targetStrategy.getId())
                     .tradingSymbol(symbol)
                     .quantity(positionQuantity)
                     .greeks(Greeks.UNAVAILABLE)
@@ -520,7 +518,6 @@ class IronCondorStrategyTest {
 
         Position deltaPosition = Position.builder()
                 .id("POS-DELTA-" + System.nanoTime())
-                .strategyId(targetStrategy.getId())
                 .tradingSymbol(symbol + "-DELTA")
                 .quantity(1)
                 .greeks(greeks)

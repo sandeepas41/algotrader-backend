@@ -143,7 +143,6 @@ class SpreadStrategiesTest {
             // Add a buy leg (qty > 0, PE)
             Position buyLeg = Position.builder()
                     .id("POS-BUY")
-                    .strategyId("STR-BPS-001")
                     .tradingSymbol("NIFTY22000PE")
                     .quantity(75)
                     .unrealizedPnl(BigDecimal.valueOf(-3500))
@@ -247,7 +246,6 @@ class SpreadStrategiesTest {
 
             Position sellLeg = Position.builder()
                     .id("POS-SELL")
-                    .strategyId("STR-BPS-002")
                     .tradingSymbol("NIFTY21900PE")
                     .quantity(-75)
                     .unrealizedPnl(BigDecimal.valueOf(-3500))
@@ -351,7 +349,6 @@ class SpreadStrategiesTest {
 
             Position sellLeg = Position.builder()
                     .id("POS-SELL")
-                    .strategyId("STR-BCS-001")
                     .tradingSymbol("NIFTY22100CE")
                     .quantity(-75)
                     .unrealizedPnl(BigDecimal.valueOf(-3500))
@@ -386,7 +383,6 @@ class SpreadStrategiesTest {
     private void addPositionWithPnl(BaseStrategy strategy, BigDecimal unrealizedPnl, BigDecimal realizedPnl) {
         Position position = Position.builder()
                 .id("POS-" + System.nanoTime())
-                .strategyId(strategy.getId())
                 .tradingSymbol("NIFTY22000PE")
                 .quantity(-75)
                 .unrealizedPnl(unrealizedPnl)

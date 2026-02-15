@@ -113,7 +113,6 @@ class UpdatesHandlerTest {
                     .lastPrice(BigDecimal.valueOf(165.00))
                     .unrealizedPnl(BigDecimal.valueOf(750.00))
                     .realizedPnl(BigDecimal.ZERO)
-                    .strategyId("STR-001")
                     .build();
 
             PositionEvent event = new PositionEvent(this, position, PositionEventType.UPDATED);

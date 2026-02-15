@@ -9,25 +9,23 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.algotrader.api.controller.PositionController;
 import com.algotrader.broker.BrokerGateway;
 import com.algotrader.config.ApiResponseAdvice;
-import com.algotrader.core.engine.StrategyEngine;
 import com.algotrader.domain.model.Position;
 import com.algotrader.domain.model.ReconciliationResult;
+import com.algotrader.mapper.BrokerPositionMapper;
 import com.algotrader.reconciliation.PositionReconciliationService;
 import com.algotrader.repository.redis.PositionRedisRepository;
-import com.algotrader.strategy.adoption.AdoptionResult;
-import com.algotrader.strategy.adoption.PositionAdoptionService;
-import com.algotrader.strategy.base.BaseStrategy;
+import com.algotrader.strategy.adoption.PositionAllocationService;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
@@ -47,25 +45,22 @@ class PositionControllerTest {
     private BrokerGateway brokerGateway;
 
     @Mock
-    private PositionAdoptionService positionAdoptionService;
-
-    @Mock
-    private StrategyEngine strategyEngine;
-
-    @Mock
     private PositionReconciliationService positionReconciliationService;
 
     @Mock
-    private BaseStrategy baseStrategy;
+    private PositionAllocationService positionAllocationService;
+
+    @Mock
+    private BrokerPositionMapper brokerPositionMapper;
 
     @BeforeEach
     void setUp() {
         PositionController controller = new PositionController(
                 positionRedisRepository,
                 brokerGateway,
-                positionAdoptionService,
-                strategyEngine,
-                positionReconciliationService);
+                positionReconciliationService,
+                positionAllocationService,
+                brokerPositionMapper);
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new ApiResponseAdvice())
                 .build();
@@ -80,7 +75,6 @@ class PositionControllerTest {
                 .quantity(-50)
                 .averagePrice(BigDecimal.valueOf(120.50))
                 .unrealizedPnl(BigDecimal.valueOf(2500))
-                .strategyId("STR-001")
                 .build();
         Position position2 = Position.builder()
                 .id("POS-002")
@@ -88,7 +82,6 @@ class PositionControllerTest {
                 .quantity(-50)
                 .averagePrice(BigDecimal.valueOf(85.25))
                 .unrealizedPnl(BigDecimal.valueOf(-1200))
-                .strategyId("STR-001")
                 .build();
 
         when(positionRedisRepository.findAll()).thenReturn(List.of(position1, position2));
@@ -103,43 +96,71 @@ class PositionControllerTest {
     }
 
     @Test
-    @DisplayName("GET /api/positions/broker returns day and net positions from broker")
-    void getBrokerPositionsReturnsDayAndNet() throws Exception {
+    @DisplayName("GET /api/positions/broker returns day and net positions with allocation data")
+    void getBrokerPositionsReturnsDayAndNetWithAllocation() throws Exception {
         Position dayPos = Position.builder()
+                .id("NFO:NIFTY25FEB24500CE")
                 .tradingSymbol("NIFTY25FEB24500CE")
                 .quantity(-50)
                 .build();
         Position netPos = Position.builder()
+                .id("NFO:NIFTY25FEB24500CE")
                 .tradingSymbol("NIFTY25FEB24500CE")
                 .quantity(-100)
                 .build();
 
         when(brokerGateway.getPositions()).thenReturn(Map.of("day", List.of(dayPos), "net", List.of(netPos)));
+        when(positionAllocationService.getAllocationMap(Set.of("NFO:NIFTY25FEB24500CE")))
+                .thenReturn(Map.of("NFO:NIFTY25FEB24500CE", -75));
+
+        // Stub the mapper
+        when(brokerPositionMapper.toResponse(dayPos))
+                .thenReturn(com.algotrader.api.dto.response.BrokerPositionResponse.builder()
+                        .id("NFO:NIFTY25FEB24500CE")
+                        .tradingSymbol("NIFTY25FEB24500CE")
+                        .quantity(-50)
+                        .build());
+        when(brokerPositionMapper.toResponse(netPos))
+                .thenReturn(com.algotrader.api.dto.response.BrokerPositionResponse.builder()
+                        .id("NFO:NIFTY25FEB24500CE")
+                        .tradingSymbol("NIFTY25FEB24500CE")
+                        .quantity(-100)
+                        .build());
 
         mockMvc.perform(get("/api/positions/broker"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.day").isArray())
                 .andExpect(jsonPath("$.data.day.length()").value(1))
+                .andExpect(jsonPath("$.data.day[0].allocatedQuantity").value(-75))
                 .andExpect(jsonPath("$.data.net").isArray())
-                .andExpect(jsonPath("$.data.net.length()").value(1));
+                .andExpect(jsonPath("$.data.net.length()").value(1))
+                .andExpect(jsonPath("$.data.net[0].allocatedQuantity").value(-75));
     }
 
     @Test
-    @DisplayName("GET /api/positions/orphans returns unassigned positions")
-    void getOrphanPositionsReturnsOrphans() throws Exception {
-        Position orphan = Position.builder()
-                .id("POS-003")
-                .tradingSymbol("BANKNIFTY25FEB50000CE")
-                .quantity(-25)
+    @DisplayName("GET /api/positions/broker returns 0 allocatedQuantity for unmanaged positions")
+    void getBrokerPositionsReturnsZeroAllocationForUnmanaged() throws Exception {
+        Position netPos = Position.builder()
+                .id("NFO:NIFTY25FEB24500PE")
+                .tradingSymbol("NIFTY25FEB24500PE")
+                .quantity(-50)
                 .build();
 
-        when(positionAdoptionService.findOrphanPositions()).thenReturn(List.of(orphan));
+        when(brokerGateway.getPositions()).thenReturn(Map.of("net", List.of(netPos)));
+        // No allocations — empty map returned
+        when(positionAllocationService.getAllocationMap(Set.of("NFO:NIFTY25FEB24500PE")))
+                .thenReturn(Map.of());
 
-        mockMvc.perform(get("/api/positions/orphans"))
+        when(brokerPositionMapper.toResponse(netPos))
+                .thenReturn(com.algotrader.api.dto.response.BrokerPositionResponse.builder()
+                        .id("NFO:NIFTY25FEB24500PE")
+                        .tradingSymbol("NIFTY25FEB24500PE")
+                        .quantity(-50)
+                        .build());
+
+        mockMvc.perform(get("/api/positions/broker"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data").isArray())
-                .andExpect(jsonPath("$.data.length()").value(1))
-                .andExpect(jsonPath("$.data[0].id").value("POS-003"));
+                .andExpect(jsonPath("$.data.net[0].allocatedQuantity").value(0));
     }
 
     @Test
@@ -179,55 +200,5 @@ class PositionControllerTest {
                 .andExpect(jsonPath("$.data.brokerPositionCount").value(2))
                 .andExpect(jsonPath("$.data.localPositionCount").value(1))
                 .andExpect(jsonPath("$.data.autoSynced").value(1));
-    }
-
-    @Test
-    @DisplayName("POST /api/positions/{positionId}/adopt adopts position into strategy")
-    void adoptPositionReturnsResult() throws Exception {
-        when(strategyEngine.getStrategy("STR-001")).thenReturn(baseStrategy);
-        AdoptionResult result = AdoptionResult.builder()
-                .strategyId("STR-001")
-                .positionId("POS-001")
-                .operationType(AdoptionResult.OperationType.ADOPT)
-                .recalculatedEntryPremium(BigDecimal.valueOf(205.75))
-                .build();
-        when(positionAdoptionService.adoptPosition(baseStrategy, "POS-001")).thenReturn(result);
-
-        String body = """
-                { "strategyId": "STR-001" }
-                """;
-
-        mockMvc.perform(post("/api/positions/POS-001/adopt")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.strategyId").value("STR-001"))
-                .andExpect(jsonPath("$.data.positionId").value("POS-001"))
-                .andExpect(jsonPath("$.data.operationType").value("ADOPT"))
-                .andExpect(jsonPath("$.data.recalculatedEntryPremium").value(205.75));
-    }
-
-    @Test
-    @DisplayName("POST /api/positions/{positionId}/detach detaches position from strategy")
-    void detachPositionReturnsResult() throws Exception {
-        when(strategyEngine.getStrategy("STR-001")).thenReturn(baseStrategy);
-        AdoptionResult result = AdoptionResult.builder()
-                .strategyId("STR-001")
-                .positionId("POS-002")
-                .operationType(AdoptionResult.OperationType.DETACH)
-                .build();
-        when(positionAdoptionService.detachPosition(baseStrategy, "POS-002")).thenReturn(result);
-
-        String body = """
-                { "strategyId": "STR-001" }
-                """;
-
-        mockMvc.perform(post("/api/positions/POS-002/detach")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.strategyId").value("STR-001"))
-                .andExpect(jsonPath("$.data.positionId").value("POS-002"))
-                .andExpect(jsonPath("$.data.operationType").value("DETACH"));
     }
 }

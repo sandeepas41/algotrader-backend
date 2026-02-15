@@ -58,9 +58,6 @@ public class PositionEntity {
     @Column(name = "overnight_quantity")
     private int overnightQuantity;
 
-    @Column(name = "strategy_id", length = 36)
-    private String strategyId;
-
     @Column(name = "opened_at")
     private LocalDateTime openedAt;
 

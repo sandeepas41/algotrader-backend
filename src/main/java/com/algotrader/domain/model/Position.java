@@ -46,9 +46,6 @@ public class Position {
     /** Calculated via Black-Scholes, NOT from Kite. Recalculated on every tick. */
     private Greeks greeks;
 
-    /** Strategy this position belongs to. Null for manually traded positions. */
-    private String strategyId;
-
     private LocalDateTime openedAt;
     private LocalDateTime closedAt;
     private LocalDateTime lastUpdated;

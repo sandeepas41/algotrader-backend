@@ -36,7 +36,12 @@ public class KitePositionMapper {
             return null;
         }
 
+        // Broker positions don't have a persistent ID — derive one from exchange:symbol
+        // so the FE can use it as a stable key for selection and rendering.
+        String syntheticId = kitePosition.exchange + ":" + kitePosition.tradingSymbol;
+
         return Position.builder()
+                .id(syntheticId)
                 .instrumentToken(parseInstrumentToken(kitePosition.instrumentToken))
                 .tradingSymbol(kitePosition.tradingSymbol)
                 .exchange(kitePosition.exchange)

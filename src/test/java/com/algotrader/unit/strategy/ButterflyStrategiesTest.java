@@ -136,7 +136,6 @@ class ButterflyStrategiesTest {
             // Short call position for getShortCall detection
             Position shortCall = Position.builder()
                     .id("POS-SC")
-                    .strategyId("STR-IB-001")
                     .tradingSymbol("NIFTY22000CE")
                     .quantity(-75)
                     .greeks(Greeks.UNAVAILABLE)
@@ -156,7 +155,6 @@ class ButterflyStrategiesTest {
                     .build();
             Position deltaPos = Position.builder()
                     .id("POS-DELTA")
-                    .strategyId("STR-IB-001")
                     .tradingSymbol("NIFTY-DELTA")
                     .quantity(1)
                     .greeks(greeks)
@@ -272,7 +270,6 @@ class ButterflyStrategiesTest {
 
             Position position = Position.builder()
                     .id("POS-1")
-                    .strategyId("STR-BWB-001")
                     .tradingSymbol("NIFTY22000CE")
                     .quantity(-75)
                     .unrealizedPnl(BigDecimal.valueOf(100))

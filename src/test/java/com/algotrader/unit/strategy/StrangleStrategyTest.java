@@ -236,7 +236,6 @@ class StrangleStrategyTest {
                     .build();
             Position position = Position.builder()
                     .id("POS-1")
-                    .strategyId(STRATEGY_ID)
                     .tradingSymbol("NIFTY22200CE")
                     .quantity(1)
                     .greeks(greeks)
@@ -271,7 +270,6 @@ class StrangleStrategyTest {
                     .build();
             Position position = Position.builder()
                     .id("POS-1")
-                    .strategyId(STRATEGY_ID)
                     .tradingSymbol("NIFTY22200CE")
                     .quantity(1)
                     .greeks(greeks)
@@ -311,7 +309,6 @@ class StrangleStrategyTest {
     private void addPositionWithPnl(BigDecimal unrealizedPnl, BigDecimal realizedPnl) {
         Position position = Position.builder()
                 .id("POS-" + System.nanoTime())
-                .strategyId(STRATEGY_ID)
                 .tradingSymbol("NIFTY22200CE")
                 .quantity(-75)
                 .unrealizedPnl(unrealizedPnl)

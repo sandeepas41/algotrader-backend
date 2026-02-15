@@ -85,8 +85,6 @@ public class UpdatesHandler {
         payload.put("lastPrice", position.getLastPrice());
         payload.put("unrealizedPnl", position.getUnrealizedPnl());
         payload.put("realizedPnl", position.getRealizedPnl());
-        payload.put("strategyId", position.getStrategyId());
-
         sendUpdate("POSITION", payload);
     }
 

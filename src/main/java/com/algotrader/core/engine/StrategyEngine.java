@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -42,8 +43,8 @@ import org.springframework.stereotype.Service;
  *       for emergency freeze without closing positions</li>
  *   <li><b>Tick routing:</b> Listens for TickEvents and routes market snapshots to
  *       ARMED/ACTIVE strategies matching the ticked underlying</li>
- *   <li><b>Position sync:</b> Listens for PositionEvents and updates the owning
- *       strategy's position list</li>
+ *   <li><b>Position sync:</b> Listens for PositionEvents and routes to linked
+ *       strategies via the positionToStrategies reverse index</li>
  *   <li><b>Force adjustment:</b> Allows manual adjustment bypass (cooldown skipped)</li>
  * </ul>
  *
@@ -66,6 +67,13 @@ public class StrategyEngine {
 
     /** Per-strategy locks for lifecycle transitions vs tick evaluation. */
     private final ConcurrentHashMap<String, ReadWriteLock> strategyLocks = new ConcurrentHashMap<>();
+
+    /**
+     * Reverse index: positionId → set of strategyIds that have a leg linked to that position.
+     * Enables O(1) lookup for position update routing instead of iterating all strategies.
+     * Updated on adopt (registerPositionLink) and detach (unregisterPositionLink).
+     */
+    private final ConcurrentHashMap<String, Set<String>> positionToStrategies = new ConcurrentHashMap<>();
 
     private final StrategyFactory strategyFactory;
     private final EventPublisherHelper eventPublisherHelper;
@@ -311,22 +319,87 @@ public class StrategyEngine {
     }
 
     /**
-     * Routes position updates to the owning strategy.
-     * Updates the strategy's internal position list for P&L tracking.
+     * Routes position updates to all strategies linked via strategy legs.
+     * Uses the positionToStrategies reverse index for O(1) lookup instead of
+     * iterating all active strategies.
      */
     @EventListener
     public void onPositionUpdate(PositionEvent event) {
         Position position = event.getPosition();
-        String strategyId = position.getStrategyId();
+        String positionId = position.getId();
 
-        if (strategyId == null) {
-            return; // manually traded position, not owned by any strategy
+        Set<String> strategyIds = positionToStrategies.get(positionId);
+        if (strategyIds == null || strategyIds.isEmpty()) {
+            return;
         }
 
-        BaseStrategy strategy = activeStrategies.get(strategyId);
-        if (strategy != null) {
-            strategy.updatePosition(position);
+        for (String strategyId : strategyIds) {
+            BaseStrategy strategy = activeStrategies.get(strategyId);
+            if (strategy != null) {
+                strategy.updatePosition(position);
+            }
         }
+    }
+
+    // ========================
+    // POSITION-STRATEGY INDEX
+    // ========================
+
+    /**
+     * Registers a position→strategy link in the reverse index.
+     * Called by PositionAdoptionService after a successful adopt.
+     *
+     * @param positionId the adopted position
+     * @param strategyId the strategy that adopted it
+     */
+    public void registerPositionLink(String positionId, String strategyId) {
+        positionToStrategies
+                .computeIfAbsent(positionId, k -> ConcurrentHashMap.newKeySet())
+                .add(strategyId);
+        log.debug("Reverse index updated: position {} → added strategy {}", positionId, strategyId);
+    }
+
+    /**
+     * Unregisters a position→strategy link from the reverse index.
+     * Called by PositionAdoptionService after a successful detach.
+     *
+     * @param positionId the detached position
+     * @param strategyId the strategy that detached it
+     */
+    public void unregisterPositionLink(String positionId, String strategyId) {
+        Set<String> strategyIds = positionToStrategies.get(positionId);
+        if (strategyIds != null) {
+            strategyIds.remove(strategyId);
+            if (strategyIds.isEmpty()) {
+                positionToStrategies.remove(positionId);
+            }
+        }
+        log.debug("Reverse index updated: position {} → removed strategy {}", positionId, strategyId);
+    }
+
+    /**
+     * Populates the reverse index from persisted strategy legs.
+     * Called on startup to rebuild the index from the database.
+     *
+     * @param positionStrategyLinks list of [positionId, strategyId] pairs from active legs
+     */
+    public void populatePositionIndex(List<Map.Entry<String, String>> positionStrategyLinks) {
+        positionToStrategies.clear();
+        for (Map.Entry<String, String> link : positionStrategyLinks) {
+            registerPositionLink(link.getKey(), link.getValue());
+        }
+        log.info(
+                "Reverse index populated with {} position→strategy links across {} positions",
+                positionStrategyLinks.size(),
+                positionToStrategies.size());
+    }
+
+    /**
+     * Returns the set of strategy IDs linked to a position (for testing/diagnostics).
+     */
+    public Set<String> getStrategiesForPosition(String positionId) {
+        Set<String> strategyIds = positionToStrategies.get(positionId);
+        return strategyIds != null ? Collections.unmodifiableSet(strategyIds) : Set.of();
     }
 
     // ========================

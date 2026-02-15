@@ -151,17 +151,14 @@ public class PositionReconciliationService {
                             .localQuantity(0)
                             .build());
                 } else if (brokerPos.getQuantity() != localPos.getQuantity()) {
-                    // QUANTITY_MISMATCH: strategy-owned positions get paused
-                    ResolutionStrategy resolution = localPos.getStrategyId() != null
-                            ? ResolutionStrategy.PAUSE_STRATEGY
-                            : ResolutionStrategy.AUTO_SYNC;
-
+                    // QUANTITY_MISMATCH: auto-sync to broker state
+                    // #TODO: Use PositionAllocationService to detect strategy-linked positions
+                    //  and apply PAUSE_STRATEGY resolution for those.
                     mismatches.add(PositionMismatch.builder()
                             .instrumentToken(token)
                             .tradingSymbol(brokerPos.getTradingSymbol())
                             .type(MismatchType.QUANTITY_MISMATCH)
-                            .resolution(resolution)
-                            .strategyId(localPos.getStrategyId())
+                            .resolution(ResolutionStrategy.AUTO_SYNC)
                             .brokerQuantity(brokerPos.getQuantity())
                             .brokerAveragePrice(brokerPos.getAveragePrice())
                             .localQuantity(localPos.getQuantity())
@@ -183,7 +180,6 @@ public class PositionReconciliationService {
                             .tradingSymbol(localPos.getTradingSymbol())
                             .type(MismatchType.MISSING_BROKER)
                             .resolution(ResolutionStrategy.AUTO_SYNC)
-                            .strategyId(localPos.getStrategyId())
                             .localQuantity(localPos.getQuantity())
                             .localAveragePrice(localPos.getAveragePrice())
                             .brokerQuantity(0)
@@ -264,7 +260,6 @@ public class PositionReconciliationService {
                     .tradingSymbol(brokerPos.getTradingSymbol())
                     .type(MismatchType.PRICE_DRIFT)
                     .resolution(ResolutionStrategy.ALERT_ONLY)
-                    .strategyId(localPos.getStrategyId())
                     .brokerQuantity(brokerPos.getQuantity())
                     .brokerAveragePrice(brokerPos.getAveragePrice())
                     .localQuantity(localPos.getQuantity())
@@ -302,11 +297,8 @@ public class PositionReconciliationService {
                     alertsRaised++;
                 }
                 case PAUSE_STRATEGY -> {
-                    if (mismatch.getStrategyId() != null) {
-                        strategyEngine.pauseStrategy(mismatch.getStrategyId());
-                        mismatch.setResolutionDetail("Strategy " + mismatch.getStrategyId() + " paused");
-                    }
-                    // Also sync the position to broker state
+                    // #TODO: Use PositionAllocationService to find linked strategies and pause them
+                    // For now, just sync the position to broker state
                     Position brokerPos = brokerMap.get(mismatch.getInstrumentToken());
                     if (brokerPos != null) {
                         positionRedisRepository.save(brokerPos);

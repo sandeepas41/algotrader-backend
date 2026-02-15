@@ -1,53 +1,61 @@
 package com.algotrader.strategy.adoption;
 
+import com.algotrader.core.engine.StrategyEngine;
+import com.algotrader.domain.enums.InstrumentType;
 import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.domain.model.Position;
+import com.algotrader.entity.StrategyLegEntity;
 import com.algotrader.exception.BusinessException;
 import com.algotrader.exception.ErrorCode;
 import com.algotrader.exception.ResourceNotFoundException;
+import com.algotrader.repository.jpa.StrategyLegJpaRepository;
 import com.algotrader.repository.redis.PositionRedisRepository;
 import com.algotrader.strategy.base.BaseStrategy;
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
 /**
  * Manages position adoption (attach) and detach operations between positions and strategies.
  *
- * <p>Useful when:
- * <ul>
- *   <li>A trade was entered manually in Kite and needs platform management</li>
- *   <li>A strategy crashed and positions need re-association</li>
- *   <li>Monitoring existing positions with strategy-level P&L</li>
- * </ul>
+ * <p>With the redesigned position-strategy linking model, positions are strategy-unaware.
+ * Adoption creates a StrategyLeg linked to the position with a specified quantity.
+ * Detach clears the leg's positionId, releasing the allocated quantity.
+ *
+ * <p>The same position can be adopted into multiple strategies, each with its own
+ * allocated quantity. Validation ensures the total allocated quantity across all
+ * strategies does not exceed the position's broker quantity.
  *
  * <p><b>Adopt flow:</b>
  * <ol>
- *   <li>Validate position exists and isn't already assigned</li>
- *   <li>Validate position is compatible with the strategy type (option type, underlying)</li>
- *   <li>Check for quantity mismatch with strategy lot size</li>
- *   <li>Assign position to strategy (Redis + in-memory)</li>
- *   <li>Recalculate entry premium from all strategy positions' average prices</li>
- *   <li>Return result with any warnings</li>
+ *   <li>Validate position exists in Redis</li>
+ *   <li>Validate quantity sign matches and does not exceed unmanaged remainder</li>
+ *   <li>Validate strategy is not already linked to this position</li>
+ *   <li>Validate compatibility (underlying, option type)</li>
+ *   <li>Create a StrategyLeg with positionId + quantity</li>
+ *   <li>Add position to strategy's in-memory list</li>
+ *   <li>Recalculate entry premium</li>
  * </ol>
  *
  * <p><b>Detach flow:</b>
  * <ol>
- *   <li>Validate position belongs to the specified strategy</li>
- *   <li>Remove strategy assignment (Redis + in-memory)</li>
- *   <li>Recalculate entry premium for remaining positions</li>
+ *   <li>Find the leg linked to the position in this strategy</li>
+ *   <li>Clear the leg's positionId</li>
+ *   <li>Remove position from strategy's in-memory list</li>
+ *   <li>Recalculate entry premium</li>
  * </ol>
- *
- * <p><b>Orphan detection:</b> Finds positions in Redis that have no strategy assignment.
- * Called on startup or periodically to surface untracked positions.
- *
- * <p>Uses PositionRedisRepository directly (PositionService doesn't exist yet).
- * Logging goes through SLF4J (DecisionLogger deferred to Task 8.1).
  */
 @Service
 public class PositionAdoptionService {
@@ -55,33 +63,48 @@ public class PositionAdoptionService {
     private static final Logger log = LoggerFactory.getLogger(PositionAdoptionService.class);
 
     /**
-     * Strategy types that require CE (Call) positions.
-     * Bull Call Spread only uses CE legs.
+     * Parses strike and option type from NSE option trading symbols.
+     * Format: UNDERLYING + EXPIRY_DIGITS + STRIKE + CE/PE
+     * Example: NIFTY2560519500CE → strike=19500, type=CE
      */
-    private static final Set<StrategyType> CE_ONLY_STRATEGIES = Set.of(StrategyType.BULL_CALL_SPREAD);
+    private static final Pattern OPTION_SYMBOL_PATTERN = Pattern.compile(".*?(\\d+\\.?\\d*)(CE|PE)$");
 
-    /**
-     * Strategy types that require PE (Put) positions.
-     * Bull Put Spread only uses PE legs.
-     */
+    private static final Set<StrategyType> CE_ONLY_STRATEGIES = Set.of(StrategyType.BULL_CALL_SPREAD);
     private static final Set<StrategyType> PE_ONLY_STRATEGIES =
             Set.of(StrategyType.BULL_PUT_SPREAD, StrategyType.BEAR_PUT_SPREAD);
 
-    /**
-     * Strategy types that use both CE and PE positions.
-     * Straddle, Strangle, Iron Condor, Iron Butterfly all use both sides.
-     */
-    private static final Set<StrategyType> DUAL_OPTION_STRATEGIES =
-            Set.of(StrategyType.STRADDLE, StrategyType.STRANGLE, StrategyType.IRON_CONDOR, StrategyType.IRON_BUTTERFLY);
-
     private final PositionRedisRepository positionRedisRepository;
+    private final StrategyLegJpaRepository strategyLegJpaRepository;
+    private final PositionAllocationService positionAllocationService;
+    private final StrategyEngine strategyEngine;
 
-    // #TODO Task 8.1: Replace with DecisionLogger for structured decision logging
-    // #TODO Task 6.2 follow-up: Inject StrategyEngine once circular dependency is resolved
-    //   For now, the caller (StrategyEngine or API controller) passes the BaseStrategy directly.
-
-    public PositionAdoptionService(PositionRedisRepository positionRedisRepository) {
+    public PositionAdoptionService(
+            PositionRedisRepository positionRedisRepository,
+            StrategyLegJpaRepository strategyLegJpaRepository,
+            PositionAllocationService positionAllocationService,
+            StrategyEngine strategyEngine) {
         this.positionRedisRepository = positionRedisRepository;
+        this.strategyLegJpaRepository = strategyLegJpaRepository;
+        this.positionAllocationService = positionAllocationService;
+        this.strategyEngine = strategyEngine;
+    }
+
+    // ========================
+    // STARTUP
+    // ========================
+
+    /**
+     * Populates the StrategyEngine's reverse index (positionId → strategyIds) on startup
+     * by reading all strategy legs with non-null positionId from the database.
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    @Order(1) // Early: before strategies start evaluating
+    public void populatePositionIndexOnStartup() {
+        List<StrategyLegEntity> linkedLegs = strategyLegJpaRepository.findByPositionIdIsNotNull();
+        List<Map.Entry<String, String>> links = linkedLegs.stream()
+                .<Map.Entry<String, String>>map(leg -> Map.entry(leg.getPositionId(), leg.getStrategyId()))
+                .toList();
+        strategyEngine.populatePositionIndex(links);
     }
 
     // ========================
@@ -89,62 +112,85 @@ public class PositionAdoptionService {
     // ========================
 
     /**
-     * Attaches an existing position to a strategy for tracking and management.
+     * Adopts a position into a strategy by creating a new StrategyLeg linked to it.
      *
-     * <p>The position must exist in Redis and must not be assigned to another strategy.
-     * Validates compatibility between the position's option type and the strategy type.
-     * Recalculates entry premium after adoption based on all positions' average prices.
-     *
-     * @param strategy   the strategy to adopt the position into
+     * @param strategy   the target strategy
      * @param positionId the position to adopt
-     * @return result with recalculated entry premium and any warnings
-     * @throws ResourceNotFoundException if position doesn't exist
-     * @throws BusinessException         if position is already assigned to another strategy
+     * @param quantity   signed quantity to allocate (must match position sign)
+     * @return result with any warnings
      */
-    public AdoptionResult adoptPosition(BaseStrategy strategy, String positionId) {
+    public AdoptionResult adoptPosition(BaseStrategy strategy, String positionId, int quantity) {
         Position position = getPositionOrThrow(positionId);
         String strategyId = strategy.getId();
         List<String> warnings = new ArrayList<>();
 
-        // Validate: position not already assigned to a different strategy
-        if (position.getStrategyId() != null && !position.getStrategyId().equals(strategyId)) {
-            throw new BusinessException(
-                    ErrorCode.VALIDATION_ERROR,
-                    "Position " + positionId + " already belongs to strategy " + position.getStrategyId());
+        // Validate: quantity is non-zero
+        if (quantity == 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "Quantity must not be zero");
         }
 
-        // Validate: position not already in this strategy
-        if (strategyId.equals(position.getStrategyId())) {
+        // Validate: quantity sign matches position sign
+        if ((quantity > 0 && position.getQuantity() < 0) || (quantity < 0 && position.getQuantity() > 0)) {
             throw new BusinessException(
                     ErrorCode.VALIDATION_ERROR,
-                    "Position " + positionId + " is already assigned to strategy " + strategyId);
+                    "Quantity sign (" + quantity + ") does not match position sign (" + position.getQuantity() + ")");
         }
 
-        // Validate: underlying matches
+        // Validate: quantity does not exceed unmanaged remainder
+        int unmanaged = positionAllocationService.getUnmanagedQuantity(positionId, position.getQuantity());
+        if (Math.abs(quantity) > unmanaged) {
+            throw new BusinessException(
+                    ErrorCode.VALIDATION_ERROR,
+                    "Requested quantity (" + Math.abs(quantity) + ") exceeds unmanaged remainder (" + unmanaged + ")");
+        }
+
+        // Validate: strategy does not already have a leg linked to this position
+        List<StrategyLegEntity> existingLegs = strategyLegJpaRepository.findByStrategyId(strategyId);
+        boolean alreadyLinked = existingLegs.stream().anyMatch(leg -> positionId.equals(leg.getPositionId()));
+        if (alreadyLinked) {
+            throw new BusinessException(
+                    ErrorCode.VALIDATION_ERROR,
+                    "Position " + positionId + " is already linked to strategy " + strategyId);
+        }
+
+        // Validate: underlying and option type compatibility
         validateUnderlying(position, strategy, warnings);
-
-        // Validate: option type compatible with strategy type
         validateOptionTypeCompatibility(position, strategy, warnings);
 
-        // Warn: quantity mismatch with strategy lot size
-        checkQuantityMismatch(position, strategy, warnings);
+        // Derive option type and strike from trading symbol
+        InstrumentType optionType = deriveOptionType(position.getTradingSymbol());
+        BigDecimal strike = deriveStrike(position.getTradingSymbol());
 
-        // Assign position to strategy in Redis
-        position.setStrategyId(strategyId);
-        positionRedisRepository.save(position);
+        // Create StrategyLeg
+        StrategyLegEntity legEntity = StrategyLegEntity.builder()
+                .id(UUID.randomUUID().toString())
+                .strategyId(strategyId)
+                .optionType(optionType)
+                .strike(strike)
+                .quantity(quantity)
+                .positionId(positionId)
+                .build();
+        strategyLegJpaRepository.save(legEntity);
 
-        // Add position to strategy's in-memory list
-        strategy.addPosition(position);
+        // Add position to strategy's in-memory list (if not already present)
+        boolean alreadyInMemory = strategy.getPositions().stream().anyMatch(p -> positionId.equals(p.getId()));
+        if (!alreadyInMemory) {
+            strategy.addPosition(position);
+        }
 
-        // Recalculate entry premium from all positions
+        // Update reverse index for tick routing
+        strategyEngine.registerPositionLink(positionId, strategyId);
+
+        // Recalculate entry premium
         BigDecimal entryPremium = recalculateEntryPremium(strategy);
 
         log.info(
-                "[{}] Position adopted: positionId={}, symbol={}, qty={}, entryPremium={}",
+                "[{}] Position adopted: positionId={}, symbol={}, qty={}, legId={}, entryPremium={}",
                 strategyId,
                 positionId,
                 position.getTradingSymbol(),
-                position.getQuantity(),
+                quantity,
+                legEntity.getId(),
                 entryPremium);
 
         if (!warnings.isEmpty()) {
@@ -165,41 +211,46 @@ public class PositionAdoptionService {
     // ========================
 
     /**
-     * Detaches a position from a strategy WITHOUT closing it.
-     * The position remains open in the broker but is no longer tracked by the strategy.
+     * Detaches a position from a strategy by clearing the leg's positionId.
+     * The leg itself is preserved (with null positionId) — only the link is severed.
      *
-     * @param strategy   the strategy to detach the position from
+     * @param strategy   the strategy to detach from
      * @param positionId the position to detach
-     * @return result with recalculated entry premium for remaining positions
-     * @throws ResourceNotFoundException if position doesn't exist
-     * @throws BusinessException         if position doesn't belong to this strategy
+     * @return result with recalculated entry premium
      */
     public AdoptionResult detachPosition(BaseStrategy strategy, String positionId) {
-        Position position = getPositionOrThrow(positionId);
         String strategyId = strategy.getId();
 
-        // Validate: position must belong to this strategy
-        if (!strategyId.equals(position.getStrategyId())) {
-            throw new BusinessException(
-                    ErrorCode.VALIDATION_ERROR,
-                    "Position " + positionId + " does not belong to strategy " + strategyId);
+        // Find the leg linked to this position in this strategy
+        List<StrategyLegEntity> legs = strategyLegJpaRepository.findByStrategyId(strategyId);
+        StrategyLegEntity linkedLeg = legs.stream()
+                .filter(leg -> positionId.equals(leg.getPositionId()))
+                .findFirst()
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "StrategyLeg", "position " + positionId + " in strategy " + strategyId));
+
+        // Clear the positionId on the leg
+        linkedLeg.setPositionId(null);
+        strategyLegJpaRepository.save(linkedLeg);
+
+        // Remove position from strategy's in-memory list (if no other legs reference it)
+        boolean otherLegsReferencePosition = legs.stream()
+                .filter(leg -> !leg.getId().equals(linkedLeg.getId()))
+                .anyMatch(leg -> positionId.equals(leg.getPositionId()));
+        if (!otherLegsReferencePosition) {
+            strategy.removePosition(positionId);
+            // Update reverse index — only remove link if no other legs reference this position
+            strategyEngine.unregisterPositionLink(positionId, strategyId);
         }
 
-        // Remove strategy assignment in Redis
-        position.setStrategyId(null);
-        positionRedisRepository.save(position);
-
-        // Remove from strategy's in-memory list
-        strategy.removePosition(positionId);
-
-        // Recalculate entry premium for remaining positions
+        // Recalculate entry premium
         BigDecimal entryPremium = recalculateEntryPremium(strategy);
 
         log.info(
-                "[{}] Position detached: positionId={}, symbol={}, remainingPositions={}, entryPremium={}",
+                "[{}] Position detached: positionId={}, legId={}, remainingPositions={}, entryPremium={}",
                 strategyId,
                 positionId,
-                position.getTradingSymbol(),
+                linkedLeg.getId(),
                 strategy.getPositions().size(),
                 entryPremium);
 
@@ -213,53 +264,44 @@ public class PositionAdoptionService {
     }
 
     // ========================
-    // ORPHAN DETECTION
+    // SYMBOL PARSING
     // ========================
 
     /**
-     * Finds all positions that are not assigned to any strategy.
-     * These are positions opened manually in Kite or whose strategy has been undeployed.
-     *
-     * <p>Called on startup sync or periodically to surface untracked positions
-     * in the UI for the trader to review and potentially adopt.
-     *
-     * @return list of orphan positions (strategyId is null)
+     * Derives InstrumentType (CE or PE) from a trading symbol suffix.
+     * Returns null for non-option symbols (e.g., futures, equity).
      */
-    public List<Position> findOrphanPositions() {
-        List<Position> allPositions = positionRedisRepository.findAll();
-        List<Position> orphans =
-                allPositions.stream().filter(p -> p.getStrategyId() == null).toList();
-
-        if (!orphans.isEmpty()) {
-            log.info("Found {} orphan positions (not assigned to any strategy)", orphans.size());
+    InstrumentType deriveOptionType(String tradingSymbol) {
+        if (tradingSymbol == null) {
+            return null;
         }
-
-        return orphans;
+        if (tradingSymbol.endsWith("CE")) {
+            return InstrumentType.CE;
+        }
+        if (tradingSymbol.endsWith("PE")) {
+            return InstrumentType.PE;
+        }
+        return null;
     }
 
     /**
-     * Finds positions assigned to a strategy that is no longer active.
-     * This can happen when a strategy crashes or is undeployed without closing positions.
-     *
-     * @param activeStrategyIds the set of currently active strategy IDs
-     * @return list of positions whose strategyId doesn't match any active strategy
+     * Derives strike price from a trading symbol.
+     * NSE option symbols end with digits followed by CE/PE (e.g., NIFTY2560519500CE → 19500).
+     * Returns null if the strike cannot be parsed.
      */
-    public List<Position> findStaleAssignments(Set<String> activeStrategyIds) {
-        List<Position> allPositions = positionRedisRepository.findAll();
-        List<Position> stale = allPositions.stream()
-                .filter(p -> p.getStrategyId() != null && !activeStrategyIds.contains(p.getStrategyId()))
-                .toList();
-
-        if (!stale.isEmpty()) {
-            log.warn(
-                    "Found {} positions assigned to non-active strategies: {}",
-                    stale.size(),
-                    stale.stream()
-                            .map(p -> p.getId() + "->" + p.getStrategyId())
-                            .toList());
+    BigDecimal deriveStrike(String tradingSymbol) {
+        if (tradingSymbol == null) {
+            return null;
         }
-
-        return stale;
+        Matcher matcher = OPTION_SYMBOL_PATTERN.matcher(tradingSymbol);
+        if (matcher.matches()) {
+            try {
+                return new BigDecimal(matcher.group(1));
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+        return null;
     }
 
     // ========================
@@ -268,9 +310,9 @@ public class PositionAdoptionService {
 
     /**
      * Validates that the position's underlying matches the strategy's underlying.
-     * Trading symbol format: NIFTY22000CE -> underlying is "NIFTY".
+     * Trading symbol format: NIFTY22000CE → underlying is "NIFTY".
      */
-    private void validateUnderlying(Position position, BaseStrategy strategy, List<String> warnings) {
+    void validateUnderlying(Position position, BaseStrategy strategy, List<String> warnings) {
         String symbol = position.getTradingSymbol();
         String strategyUnderlying = strategy.getUnderlying();
 
@@ -286,9 +328,8 @@ public class PositionAdoptionService {
 
     /**
      * Validates that the position's option type (CE/PE) is compatible with the strategy type.
-     * For example, a Bull Call Spread should only have CE positions.
      */
-    private void validateOptionTypeCompatibility(Position position, BaseStrategy strategy, List<String> warnings) {
+    void validateOptionTypeCompatibility(Position position, BaseStrategy strategy, List<String> warnings) {
         String symbol = position.getTradingSymbol();
         StrategyType strategyType = strategy.getType();
 
@@ -300,7 +341,6 @@ public class PositionAdoptionService {
         boolean isPE = symbol.endsWith("PE");
 
         if (!isCE && !isPE) {
-            // Not an option position (e.g., futures) -- no validation needed
             return;
         }
 
@@ -315,46 +355,13 @@ public class PositionAdoptionService {
         }
     }
 
-    /**
-     * Checks if the adopted position's quantity is consistent with the strategy's expected lot size.
-     * The lot size from config represents the number of lots; actual quantity depends on the
-     * instrument's lot size (e.g., NIFTY lot = 75 shares).
-     *
-     * <p>This is a warning, not a rejection -- manual positions might intentionally differ.
-     */
-    private void checkQuantityMismatch(Position position, BaseStrategy strategy, List<String> warnings) {
-        int configuredLots = strategy.getPositions().isEmpty()
-                ? 0
-                : strategy.getPositions().stream()
-                        .mapToInt(p -> Math.abs(p.getQuantity()))
-                        .min()
-                        .orElse(0);
-
-        // If there are existing positions, compare quantities
-        if (configuredLots > 0) {
-            int positionQty = Math.abs(position.getQuantity());
-            if (positionQty != configuredLots) {
-                warnings.add("Position quantity (" + positionQty + ") differs from existing positions' quantity ("
-                        + configuredLots + "). This may affect strategy P&L calculations.");
-            }
-        }
-    }
-
     // ========================
     // ENTRY PREMIUM RECALCULATION
     // ========================
 
     /**
      * Recalculates entry premium for a strategy based on all current positions' average prices.
-     *
-     * <p>Entry premium = sum of (|averagePrice| * |quantity|) across all positions.
-     * For a straddle selling both sides, this represents the total collected premium.
-     * For directional strategies, it represents the net cost basis.
-     *
-     * <p>Updates the strategy's entryPremium field directly via the setter.
-     *
-     * @param strategy the strategy to recalculate for
-     * @return the recalculated entry premium, or null if no positions
+     * Entry premium = weighted average of |averagePrice| across positions, weighted by |quantity|.
      */
     BigDecimal recalculateEntryPremium(BaseStrategy strategy) {
         List<Position> positions = strategy.getPositions();
@@ -364,14 +371,11 @@ public class PositionAdoptionService {
             return null;
         }
 
-        // Entry premium = sum of (averagePrice * |quantity|) for all positions
-        // This represents the total premium collected/paid when entering
         BigDecimal totalPremium = positions.stream()
                 .filter(p -> p.getAveragePrice() != null)
                 .map(p -> p.getAveragePrice().multiply(BigDecimal.valueOf(Math.abs(p.getQuantity()))))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        // Normalize: per-lot premium (divide by total absolute quantity)
         int totalQuantity =
                 positions.stream().mapToInt(p -> Math.abs(p.getQuantity())).sum();
 

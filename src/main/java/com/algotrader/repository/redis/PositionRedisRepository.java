@@ -56,14 +56,6 @@ public class PositionRedisRepository {
         return values.stream().filter(Objects::nonNull).map(v -> (Position) v).toList();
     }
 
-    // #TODO Optimize: maintain a secondary Redis set per strategy (algo:positions:strategy:{strategyId})
-    //  for O(1) lookup instead of scanning all positions. Acceptable for v1 with small position counts.
-    public List<Position> findByStrategyId(String strategyId) {
-        return findAll().stream()
-                .filter(p -> strategyId.equals(p.getStrategyId()))
-                .toList();
-    }
-
     public void delete(String id) {
         redisTemplate.delete(RedisConfig.KEY_PREFIX_POSITION + id);
         redisTemplate.opsForSet().remove(RedisConfig.KEY_SET_POSITIONS_ALL, id);

@@ -375,7 +375,6 @@ class LongStraddleStrategyTest {
     private void addPositionWithPnl(TestableLongStraddleStrategy strategy, BigDecimal unrealizedPnl) {
         Position position = Position.builder()
                 .id("POS-" + System.nanoTime())
-                .strategyId(STRATEGY_ID)
                 .tradingSymbol("NIFTY22000CE")
                 .quantity(75)
                 .unrealizedPnl(unrealizedPnl)

@@ -131,8 +131,8 @@ class PositionReconciliationServiceTest {
     }
 
     @Test
-    @DisplayName("QUANTITY_MISMATCH with strategy triggers PAUSE_STRATEGY resolution")
-    void quantityMismatch_withStrategy_pausesStrategy() {
+    @DisplayName("QUANTITY_MISMATCH always uses AUTO_SYNC resolution")
+    void quantityMismatch_alwaysAutoSyncs() {
         Position brokerPos = Position.builder()
                 .instrumentToken(12345L)
                 .tradingSymbol("NIFTY25FEB24500CE")
@@ -144,7 +144,6 @@ class PositionReconciliationServiceTest {
                 .tradingSymbol("NIFTY25FEB24500CE")
                 .quantity(-50)
                 .averagePrice(BigDecimal.valueOf(118.00))
-                .strategyId("STR-001")
                 .build();
 
         when(brokerGateway.getPositions()).thenReturn(Map.of("net", List.of(brokerPos)));
@@ -152,12 +151,12 @@ class PositionReconciliationServiceTest {
 
         ReconciliationResult result = positionReconciliationService.reconcile("MANUAL");
 
+        assertThat(result.hasMismatches()).isTrue();
         PositionMismatch mismatch = result.getMismatches().get(0);
-        assertThat(mismatch.getResolution()).isEqualTo(ResolutionStrategy.PAUSE_STRATEGY);
-        assertThat(mismatch.getStrategyId()).isEqualTo("STR-001");
-        assertThat(result.getStrategiesPaused()).isEqualTo(1);
+        assertThat(mismatch.getResolution()).isEqualTo(ResolutionStrategy.AUTO_SYNC);
+        assertThat(result.getAutoSynced()).isEqualTo(1);
 
-        verify(strategyEngine).pauseStrategy("STR-001");
+        // Verify position was synced from broker
         verify(positionRedisRepository).save(brokerPos);
     }
 

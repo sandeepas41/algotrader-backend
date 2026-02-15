@@ -184,18 +184,14 @@ class PnLCalculationServiceTest {
                     .averagePrice(new BigDecimal("100"))
                     .lastPrice(new BigDecimal("110"))
                     .quantity(5)
-                    .strategyId("STR-001")
                     .build();
             Position p2 = Position.builder()
                     .averagePrice(new BigDecimal("200"))
                     .lastPrice(new BigDecimal("180"))
                     .quantity(-3)
-                    .strategyId("STR-001")
                     .build();
 
-            when(positionRedisRepository.findByStrategyId("STR-001")).thenReturn(List.of(p1, p2));
-
-            BigDecimal unrealized = pnLCalculationService.calculateStrategyUnrealizedPnl("STR-001");
+            BigDecimal unrealized = pnLCalculationService.calculateStrategyUnrealizedPnl(List.of(p1, p2));
 
             // p1: (110-100)*5 = 50, p2: (180-200)*(-3) = 60, total = 110
             assertThat(unrealized).isEqualByComparingTo("110.00");
@@ -204,9 +200,7 @@ class PnLCalculationServiceTest {
         @Test
         @DisplayName("Strategy with no positions returns zero unrealized")
         void noPositions_returnsZero() {
-            when(positionRedisRepository.findByStrategyId("STR-002")).thenReturn(Collections.emptyList());
-
-            BigDecimal unrealized = pnLCalculationService.calculateStrategyUnrealizedPnl("STR-002");
+            BigDecimal unrealized = pnLCalculationService.calculateStrategyUnrealizedPnl(Collections.emptyList());
 
             assertThat(unrealized).isEqualByComparingTo("0.00");
         }

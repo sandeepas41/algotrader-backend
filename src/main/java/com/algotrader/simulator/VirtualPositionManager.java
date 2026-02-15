@@ -154,7 +154,6 @@ public class VirtualPositionManager {
                 .averagePrice(BigDecimal.ZERO)
                 .unrealizedPnl(BigDecimal.ZERO)
                 .realizedPnl(BigDecimal.ZERO)
-                .strategyId(order.getStrategyId())
                 .openedAt(LocalDateTime.now(IST))
                 .build());
 
