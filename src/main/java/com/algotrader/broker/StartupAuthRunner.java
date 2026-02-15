@@ -1,5 +1,6 @@
 package com.algotrader.broker;
 
+import com.algotrader.recovery.StartupRecoveryService;
 import com.algotrader.service.InstrumentService;
 import com.algotrader.service.WatchlistSubscriptionService;
 import org.slf4j.Logger;
@@ -10,18 +11,27 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 
 /**
- * Runs the Kite startup sequence after the application has fully started:
- * first acquires the Kite token, then loads today's instruments into memory.
+ * Orchestrates the full startup sequence after the application is ready:
+ * auth → ticker → instruments → recovery. All steps run sequentially on the
+ * async eventExecutor thread to guarantee ordering while keeping the main
+ * thread unblocked.
  *
  * <p>Listens for {@link ApplicationReadyEvent} and delegates to
  * {@link KiteAuthService#acquireTokenOnStartup()}. If initial acquisition fails,
  * retries with exponential backoff (60s initial, doubling up to 5-minute max interval,
  * 10 retries) on a dedicated async thread so the main startup is never blocked.
  *
- * <p>After successful token acquisition, calls
- * {@link InstrumentService#loadInstrumentsOnStartup()} to populate the in-memory
- * instrument cache. Instrument loading requires a valid Kite session, so it always
- * runs after auth succeeds.
+ * <p>After successful token acquisition, runs in order:
+ * <ol>
+ *   <li>Connect Kite WebSocket ticker</li>
+ *   <li>Load today's instruments into memory</li>
+ *   <li>Run startup recovery (Redis restore, journal scan, position reconciliation,
+ *       strategy resume) via {@link StartupRecoveryService}</li>
+ * </ol>
+ *
+ * <p>Recovery always runs — even if auth fails (degraded mode) — so that non-Kite
+ * recovery steps (Redis state restore, incomplete journal scan) still execute.
+ * Position reconciliation within recovery will fail gracefully if not authenticated.
  *
  * <p>On persistent failure the system remains in degraded mode — all broker operations
  * will fail until the trader manually authenticates via /api/auth/login-url.
@@ -39,16 +49,19 @@ public class StartupAuthRunner implements ApplicationListener<ApplicationReadyEv
     private final KiteMarketDataService kiteMarketDataService;
     private final InstrumentService instrumentService;
     private final WatchlistSubscriptionService watchlistSubscriptionService;
+    private final StartupRecoveryService startupRecoveryService;
 
     public StartupAuthRunner(
             KiteAuthService kiteAuthService,
             KiteMarketDataService kiteMarketDataService,
             InstrumentService instrumentService,
-            WatchlistSubscriptionService watchlistSubscriptionService) {
+            WatchlistSubscriptionService watchlistSubscriptionService,
+            StartupRecoveryService startupRecoveryService) {
         this.kiteAuthService = kiteAuthService;
         this.kiteMarketDataService = kiteMarketDataService;
         this.instrumentService = instrumentService;
         this.watchlistSubscriptionService = watchlistSubscriptionService;
+        this.startupRecoveryService = startupRecoveryService;
     }
 
     @Override
@@ -75,6 +88,7 @@ public class StartupAuthRunner implements ApplicationListener<ApplicationReadyEv
                     log.warn(
                             "Token acquisition completed but not authenticated (sidecar may be disabled). Degraded mode.");
                 }
+                runRecovery();
                 return;
             } catch (Exception e) {
                 long interval = Math.min(INITIAL_RETRY_INTERVAL_MS * (1L << (attempt - 1)), MAX_RETRY_INTERVAL_MS);
@@ -101,6 +115,23 @@ public class StartupAuthRunner implements ApplicationListener<ApplicationReadyEv
                 "Failed to acquire Kite token after {} attempts. System in degraded mode. "
                         + "Manual login required via /api/auth/login-url",
                 MAX_RETRIES);
+
+        // Still run recovery for non-Kite steps (Redis restore, journal scan).
+        // Position reconciliation will fail gracefully if not authenticated.
+        runRecovery();
+    }
+
+    /**
+     * Triggers the startup recovery sequence (Redis restore, journal scan,
+     * position reconciliation, strategy resume). Called after auth completes
+     * to guarantee the Kite token is available for position reconciliation.
+     */
+    private void runRecovery() {
+        try {
+            startupRecoveryService.runRecovery();
+        } catch (Exception e) {
+            log.error("Startup recovery failed: {}", e.getMessage());
+        }
     }
 
     /**

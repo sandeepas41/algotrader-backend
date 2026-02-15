@@ -22,18 +22,16 @@ import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.context.event.EventListener;
-import org.springframework.core.annotation.Order;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
 /**
  * Runs the daily startup recovery sequence after the application is ready.
  *
- * <p>Executes AFTER {@link com.algotrader.broker.StartupAuthRunner} completes token
- * acquisition and instrument loading. This service handles the remaining recovery steps:
+ * <p>Called by {@link com.algotrader.broker.StartupAuthRunner} after token acquisition
+ * and instrument loading complete, guaranteeing the Kite session is available for
+ * position reconciliation. This service handles the remaining recovery steps:
  * <ol>
  *   <li>Restore Redis state (daily P&L, kill switch)</li>
  *   <li>Scan ExecutionJournal for incomplete multi-leg operations</li>
@@ -82,12 +80,11 @@ public class StartupRecoveryService {
     }
 
     /**
-     * Runs after ApplicationReadyEvent with Order(10) to give StartupAuthRunner (Order default)
-     * time to complete token acquisition and instrument loading.
+     * Runs the daily startup recovery sequence. Called by StartupAuthRunner after
+     * auth + instrument loading completes, ensuring the Kite session is available
+     * for position reconciliation.
      */
-    @EventListener(ApplicationReadyEvent.class)
-    @Order(10)
-    public void onApplicationReady() {
+    public void runRecovery() {
         log.info("Starting daily recovery sequence...");
 
         RecoveryResult recoveryResult =

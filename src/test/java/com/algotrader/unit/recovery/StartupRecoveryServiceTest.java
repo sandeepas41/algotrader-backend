@@ -36,7 +36,7 @@ import org.springframework.data.redis.core.ValueOperations;
 /**
  * Tests for StartupRecoveryService verifying state restoration from Redis,
  * incomplete execution journal recovery, position reconciliation, and
- * strategy resumption logic -- tested through the public onApplicationReady() API.
+ * strategy resumption logic -- tested through the public runRecovery() API.
  */
 @ExtendWith(MockitoExtension.class)
 class StartupRecoveryServiceTest {
@@ -98,7 +98,7 @@ class StartupRecoveryServiceTest {
         when(executionJournalJpaRepository.findByStatusIn(any())).thenReturn(List.of());
         when(positionRedisRepository.findAll()).thenReturn(List.of());
 
-        startupRecoveryService.onApplicationReady();
+        startupRecoveryService.runRecovery();
 
         verify(accountRiskChecker).resetDailyPnl(new BigDecimal("-4500.25"));
     }
@@ -110,7 +110,7 @@ class StartupRecoveryServiceTest {
         when(executionJournalJpaRepository.findByStatusIn(any())).thenReturn(List.of());
         when(positionRedisRepository.findAll()).thenReturn(List.of());
 
-        startupRecoveryService.onApplicationReady();
+        startupRecoveryService.runRecovery();
 
         verify(accountRiskChecker, never()).resetDailyPnl(any());
     }
@@ -131,7 +131,7 @@ class StartupRecoveryServiceTest {
                 .thenReturn(List.of(journal));
         when(positionRedisRepository.findAll()).thenReturn(List.of());
 
-        startupRecoveryService.onApplicationReady();
+        startupRecoveryService.runRecovery();
 
         verify(executionJournalJpaRepository).save(journal);
         // After save, the status should have been changed
@@ -152,7 +152,7 @@ class StartupRecoveryServiceTest {
         when(executionJournalJpaRepository.findByStatusIn(any())).thenReturn(List.of(journal));
         when(positionRedisRepository.findAll()).thenReturn(List.of());
 
-        startupRecoveryService.onApplicationReady();
+        startupRecoveryService.runRecovery();
 
         // Should not be saved again since it's already REQUIRES_RECOVERY
         verify(executionJournalJpaRepository, never()).save(journal);
@@ -165,7 +165,7 @@ class StartupRecoveryServiceTest {
         when(executionJournalJpaRepository.findByStatusIn(any())).thenReturn(List.of());
         when(positionRedisRepository.findAll()).thenReturn(List.of());
 
-        startupRecoveryService.onApplicationReady();
+        startupRecoveryService.runRecovery();
 
         verify(positionReconciliationService).reconcile("STARTUP");
     }
@@ -177,7 +177,7 @@ class StartupRecoveryServiceTest {
         when(executionJournalJpaRepository.findByStatusIn(any())).thenReturn(List.of());
         when(positionRedisRepository.findAll()).thenReturn(List.of());
 
-        startupRecoveryService.onApplicationReady();
+        startupRecoveryService.runRecovery();
 
         verify(applicationEventPublisher).publishEvent(any(SystemEvent.class));
     }
@@ -189,7 +189,7 @@ class StartupRecoveryServiceTest {
         when(executionJournalJpaRepository.findByStatusIn(any())).thenReturn(List.of());
         when(positionRedisRepository.findAll()).thenReturn(List.of());
 
-        startupRecoveryService.onApplicationReady();
+        startupRecoveryService.runRecovery();
 
         verify(decisionLogger)
                 .log(
@@ -211,7 +211,7 @@ class StartupRecoveryServiceTest {
         when(executionJournalJpaRepository.findByStatusIn(any())).thenReturn(List.of());
         when(positionRedisRepository.findAll()).thenReturn(List.of());
 
-        startupRecoveryService.onApplicationReady();
+        startupRecoveryService.runRecovery();
 
         // Recovery still completes and publishes event
         verify(applicationEventPublisher).publishEvent(any(SystemEvent.class));
@@ -224,7 +224,7 @@ class StartupRecoveryServiceTest {
         when(executionJournalJpaRepository.findByStatusIn(any())).thenReturn(List.of());
         when(positionReconciliationService.reconcile("STARTUP")).thenThrow(new RuntimeException("Broker API down"));
 
-        startupRecoveryService.onApplicationReady();
+        startupRecoveryService.runRecovery();
 
         // Recovery still publishes event (positionReconciliationFailed=true but no abort)
         verify(applicationEventPublisher).publishEvent(any(SystemEvent.class));
@@ -240,7 +240,7 @@ class StartupRecoveryServiceTest {
         Position pos2 = Position.builder().instrumentToken(67890L).build();
         when(positionRedisRepository.findAll()).thenReturn(List.of(pos1, pos2));
 
-        startupRecoveryService.onApplicationReady();
+        startupRecoveryService.runRecovery();
 
         // No error, positions counted
         verify(positionRedisRepository).findAll();
