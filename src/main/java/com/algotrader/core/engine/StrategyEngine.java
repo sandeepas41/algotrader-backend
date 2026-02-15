@@ -189,6 +189,23 @@ public class StrategyEngine {
     }
 
     /**
+     * Activates a strategy with adopted positions, bypassing the normal entry flow.
+     * Used by the deploy-with-adoption endpoint to short-circuit to ACTIVE after adopting positions.
+     */
+    public void activateWithAdoptedPositions(String strategyId) {
+        withWriteLock(strategyId, () -> {
+            BaseStrategy strategy = getOrThrow(strategyId);
+            strategy.activateWithAdoptedPositions();
+            eventPublisherHelper.publishDecision(
+                    this,
+                    "LIFECYCLE",
+                    "Strategy activated with adopted positions",
+                    strategyId,
+                    Map.of("positions", strategy.getPositions().size()));
+        });
+    }
+
+    /**
      * Initiates strategy close. Transitions to CLOSING and begins exit order execution.
      */
     public void closeStrategy(String strategyId) {

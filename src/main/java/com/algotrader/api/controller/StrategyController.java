@@ -2,6 +2,7 @@ package com.algotrader.api.controller;
 
 import com.algotrader.api.dto.request.AdoptRequest;
 import com.algotrader.api.dto.request.DeployConfigPayload;
+import com.algotrader.api.dto.request.DeployWithAdoptionRequest;
 import com.algotrader.api.dto.request.DetachRequest;
 import com.algotrader.core.engine.StrategyEngine;
 import com.algotrader.domain.enums.ActionType;
@@ -54,6 +55,7 @@ import org.springframework.web.bind.annotation.RestController;
  *   <li>GET /api/strategies -- list all active strategies</li>
  *   <li>GET /api/strategies/{id} -- get strategy details</li>
  *   <li>POST /api/strategies -- deploy a new strategy</li>
+ *   <li>POST /api/strategies/deploy-with-adoption -- create strategy from existing positions (no new orders)</li>
  *   <li>POST /api/strategies/{id}/arm -- arm (start monitoring)</li>
  *   <li>POST /api/strategies/{id}/pause -- pause (freeze, keep positions)</li>
  *   <li>POST /api/strategies/{id}/resume -- resume a paused strategy</li>
@@ -165,6 +167,56 @@ public class StrategyController {
         String strategyId = strategyEngine.deployStrategy(type, name, config, autoArm);
 
         return ResponseEntity.ok(Map.of("strategyId", strategyId, "message", "Strategy deployed successfully"));
+    }
+
+    /**
+     * Creates a strategy from existing broker positions in a single call.
+     * Deploys the strategy, adopts all specified positions, computes entry premium
+     * from adopted positions' average prices, and activates for monitoring.
+     * No new orders are placed.
+     */
+    @PostMapping("/deploy-with-adoption")
+    public ResponseEntity<Map<String, Object>> deployWithAdoption(
+            @Valid @RequestBody DeployWithAdoptionRequest request) {
+        StrategyType type = StrategyType.valueOf(request.getType());
+        int lots = 1; // Default lots — actual quantities come from adopted positions
+
+        // Build config with type-specific defaults
+        BaseStrategyConfig config = buildConfigForType(type, request.getUnderlying(), request.getExpiry(), lots);
+        config.setImmediateEntry(false); // No entry orders — positions already exist
+
+        // Deploy strategy (CREATED state, no auto-arm)
+        String strategyId = strategyEngine.deployStrategy(type, request.getName(), config, false);
+        BaseStrategy strategy = strategyEngine.getStrategy(strategyId);
+
+        // Adopt each position
+        List<String> allWarnings = new ArrayList<>();
+        for (AdoptRequest pos : request.getPositions()) {
+            AdoptionResult result =
+                    positionAdoptionService.adoptPosition(strategy, pos.getPositionId(), pos.getQuantity());
+            allWarnings.addAll(result.getWarnings());
+        }
+
+        // Short-circuit to ACTIVE (skip entry flow — positions already exist)
+        strategyEngine.activateWithAdoptedPositions(strategyId);
+
+        log.info(
+                "Strategy deployed with adoption: id={}, type={}, name={}, positions={}, warnings={}",
+                strategyId,
+                type,
+                request.getName(),
+                request.getPositions().size(),
+                allWarnings.size());
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("strategyId", strategyId);
+        response.put("status", "ACTIVE");
+        response.put("entryPremium", strategy.getEntryPremium());
+        response.put("positions", strategy.getPositions().size());
+        response.put("warnings", allWarnings);
+        response.put("message", "Strategy created from positions and activated");
+
+        return ResponseEntity.ok(response);
     }
 
     /**

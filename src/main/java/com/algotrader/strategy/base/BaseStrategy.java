@@ -235,6 +235,32 @@ public abstract class BaseStrategy implements TradingStrategy {
         }
     }
 
+    /**
+     * Directly activates the strategy with adopted positions, bypassing the normal
+     * entry flow (ARMED → shouldEnter → buildEntryOrders → ACTIVE). Used when creating
+     * a strategy from existing broker positions — no new orders are placed.
+     *
+     * <p>Sets status to ACTIVE and records entryTime. Only valid from CREATED or ARMED state.
+     */
+    public void activateWithAdoptedPositions() {
+        long stamp = stampedLock.writeLock();
+        try {
+            StrategyStatus previous = this.status;
+            if (previous != StrategyStatus.CREATED && previous != StrategyStatus.ARMED) {
+                throw new IllegalStateException(
+                        "Can only activate with adopted positions from CREATED or ARMED, current: " + previous);
+            }
+            this.status = StrategyStatus.ACTIVE;
+            this.entryTime = LocalDateTime.now();
+            logDecision(
+                    "LIFECYCLE",
+                    "Strategy activated with adopted positions",
+                    Map.of("previousStatus", previous.name(), "positions", positions.size()));
+        } finally {
+            stampedLock.unlockWrite(stamp);
+        }
+    }
+
     @Override
     public void initiateClose() {
         List<OrderRequest> exitOrders;
