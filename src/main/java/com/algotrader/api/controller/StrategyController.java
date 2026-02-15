@@ -11,7 +11,10 @@ import com.algotrader.domain.enums.OrderSide;
 import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.domain.model.AdjustmentAction;
 import com.algotrader.domain.model.NewLegDefinition;
+import com.algotrader.domain.model.Position;
+import com.algotrader.entity.StrategyLegEntity;
 import com.algotrader.mapper.JsonHelper;
+import com.algotrader.repository.jpa.StrategyLegJpaRepository;
 import com.algotrader.strategy.adoption.AdoptionResult;
 import com.algotrader.strategy.adoption.PositionAdoptionService;
 import com.algotrader.strategy.base.BaseStrategy;
@@ -75,10 +78,15 @@ public class StrategyController {
 
     private final StrategyEngine strategyEngine;
     private final PositionAdoptionService positionAdoptionService;
+    private final StrategyLegJpaRepository strategyLegJpaRepository;
 
-    public StrategyController(StrategyEngine strategyEngine, PositionAdoptionService positionAdoptionService) {
+    public StrategyController(
+            StrategyEngine strategyEngine,
+            PositionAdoptionService positionAdoptionService,
+            StrategyLegJpaRepository strategyLegJpaRepository) {
         this.strategyEngine = strategyEngine;
         this.positionAdoptionService = positionAdoptionService;
+        this.strategyLegJpaRepository = strategyLegJpaRepository;
     }
 
     /**
@@ -416,7 +424,12 @@ public class StrategyController {
         summary.put("type", strategy.getType().name());
         summary.put("status", strategy.getStatus().name());
         summary.put("underlying", strategy.getUnderlying());
+        summary.put("expiry", strategy.getConfig().getExpiry());
         summary.put("positionCount", strategy.getPositions().size());
+        summary.put("entryPremium", strategy.getEntryPremium());
+        summary.put("entryTime", strategy.getEntryTime());
+        summary.put("totalPnl", computeTotalPnl(strategy));
+        summary.put("legs", buildLegs(id));
         return summary;
     }
 
@@ -424,7 +437,60 @@ public class StrategyController {
         Map<String, Object> detail = buildStrategySummary(id, strategy);
         detail.put("positions", strategy.getPositions());
         detail.put("lastEvaluationTime", strategy.getLastEvaluationTime());
-        detail.put("entryPremium", strategy.getEntryPremium());
+
+        // Config exit parameters (type-specific)
+        detail.put("config", buildConfigSummary(strategy.getConfig()));
+
         return detail;
+    }
+
+    /** Fetches strategy legs from H2 and maps to response shape. */
+    private List<Map<String, Object>> buildLegs(String strategyId) {
+        List<StrategyLegEntity> legEntities = strategyLegJpaRepository.findByStrategyId(strategyId);
+        return legEntities.stream()
+                .map(leg -> {
+                    Map<String, Object> legMap = new LinkedHashMap<>();
+                    legMap.put("id", leg.getId());
+                    legMap.put("strategyId", leg.getStrategyId());
+                    legMap.put("optionType", leg.getOptionType());
+                    legMap.put("strike", leg.getStrike());
+                    legMap.put("quantity", leg.getQuantity());
+                    legMap.put("strikeSelection", leg.getStrikeSelection());
+                    legMap.put("positionId", leg.getPositionId());
+                    return legMap;
+                })
+                .toList();
+    }
+
+    /**
+     * Extracts the user-relevant exit parameters from the strategy config.
+     * Returns a flat map with targetPercent, stopLossMultiplier, minDaysToExpiry, etc.
+     */
+    private Map<String, Object> buildConfigSummary(BaseStrategyConfig config) {
+        Map<String, Object> configMap = new LinkedHashMap<>();
+        configMap.put("lots", config.getLots());
+        configMap.put("entryStartTime", config.getEntryStartTime());
+        configMap.put("entryEndTime", config.getEntryEndTime());
+        configMap.put("strikeInterval", config.getStrikeInterval());
+        configMap.put("autoPausePnlThreshold", config.getAutoPausePnlThreshold());
+        configMap.put("autoPauseDeltaThreshold", config.getAutoPauseDeltaThreshold());
+
+        if (config instanceof PositionalStrategyConfig positionalConfig) {
+            configMap.put("targetPercent", positionalConfig.getTargetPercent());
+            configMap.put("stopLossMultiplier", positionalConfig.getStopLossMultiplier());
+            configMap.put("minDaysToExpiry", positionalConfig.getMinDaysToExpiry());
+        }
+
+        return configMap;
+    }
+
+    /**
+     * Computes total unrealized P&L from all strategy positions.
+     */
+    private BigDecimal computeTotalPnl(BaseStrategy strategy) {
+        return strategy.getPositions().stream()
+                .map(Position::getUnrealizedPnl)
+                .filter(pnl -> pnl != null)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 }

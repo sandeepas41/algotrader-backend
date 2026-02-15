@@ -17,10 +17,12 @@ import com.algotrader.domain.enums.StrategyStatus;
 import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.domain.model.AdjustmentAction;
 import com.algotrader.domain.model.Position;
+import com.algotrader.repository.jpa.StrategyLegJpaRepository;
 import com.algotrader.strategy.adoption.PositionAdoptionService;
 import com.algotrader.strategy.base.BaseStrategy;
 import com.algotrader.strategy.base.BaseStrategyConfig;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -51,6 +53,9 @@ class StrategyControllerTest {
     private PositionAdoptionService positionAdoptionService;
 
     @Mock
+    private StrategyLegJpaRepository strategyLegJpaRepository;
+
+    @Mock
     private BaseStrategy straddleStrategy;
 
     @Mock
@@ -58,7 +63,8 @@ class StrategyControllerTest {
 
     @BeforeEach
     void setUp() {
-        StrategyController controller = new StrategyController(strategyEngine, positionAdoptionService);
+        StrategyController controller =
+                new StrategyController(strategyEngine, positionAdoptionService, strategyLegJpaRepository);
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new ApiResponseAdvice())
                 .build();
@@ -67,10 +73,15 @@ class StrategyControllerTest {
     @Test
     @DisplayName("GET /api/strategies returns all active strategies")
     void listStrategiesReturnsAllActive() throws Exception {
+        BaseStrategyConfig config = BaseStrategyConfig.builder()
+                .underlying("NIFTY")
+                .expiry(LocalDate.of(2025, 2, 27))
+                .build();
         when(straddleStrategy.getName()).thenReturn("Morning Straddle");
         when(straddleStrategy.getType()).thenReturn(StrategyType.STRADDLE);
         when(straddleStrategy.getStatus()).thenReturn(StrategyStatus.ACTIVE);
         when(straddleStrategy.getUnderlying()).thenReturn("NIFTY");
+        when(straddleStrategy.getConfig()).thenReturn(config);
         when(straddleStrategy.getPositions())
                 .thenReturn(List.of(
                         Position.builder()
@@ -85,6 +96,7 @@ class StrategyControllerTest {
         Map<String, BaseStrategy> strategies = new LinkedHashMap<>();
         strategies.put("STR-001", straddleStrategy);
         when(strategyEngine.getActiveStrategies()).thenReturn(strategies);
+        when(strategyLegJpaRepository.findByStrategyId("STR-001")).thenReturn(List.of());
 
         mockMvc.perform(get("/api/strategies"))
                 .andExpect(status().isOk())
@@ -105,15 +117,21 @@ class StrategyControllerTest {
                 .tradingSymbol("NIFTY25FEB24500CE")
                 .quantity(-50)
                 .build();
+        BaseStrategyConfig config = BaseStrategyConfig.builder()
+                .underlying("NIFTY")
+                .expiry(LocalDate.of(2025, 2, 27))
+                .build();
         when(straddleStrategy.getName()).thenReturn("Morning Straddle");
         when(straddleStrategy.getType()).thenReturn(StrategyType.STRADDLE);
         when(straddleStrategy.getStatus()).thenReturn(StrategyStatus.ACTIVE);
         when(straddleStrategy.getUnderlying()).thenReturn("NIFTY");
+        when(straddleStrategy.getConfig()).thenReturn(config);
         when(straddleStrategy.getPositions()).thenReturn(List.of(pos));
         when(straddleStrategy.getLastEvaluationTime()).thenReturn(LocalDateTime.of(2025, 2, 7, 10, 30, 0));
         when(straddleStrategy.getEntryPremium()).thenReturn(BigDecimal.valueOf(205.75));
 
         when(strategyEngine.getStrategy("STR-001")).thenReturn(straddleStrategy);
+        when(strategyLegJpaRepository.findByStrategyId("STR-001")).thenReturn(List.of());
 
         mockMvc.perform(get("/api/strategies/STR-001"))
                 .andExpect(status().isOk())

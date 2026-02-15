@@ -152,6 +152,11 @@ public abstract class BaseStrategy implements TradingStrategy {
         return config.getUnderlying();
     }
 
+    /** Returns the strategy configuration (expiry, lots, exit params, etc.). */
+    public BaseStrategyConfig getConfig() {
+        return config;
+    }
+
     @Override
     public Duration getStaleDataThreshold() {
         return DEFAULT_STALE_DATA_THRESHOLD;
