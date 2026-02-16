@@ -1,7 +1,6 @@
 package com.algotrader.core.engine;
 
 import com.algotrader.domain.enums.ActionType;
-import com.algotrader.domain.enums.InstrumentType;
 import com.algotrader.domain.enums.OrderSide;
 import com.algotrader.domain.enums.StrategyStatus;
 import com.algotrader.domain.enums.StrategyType;
@@ -26,7 +25,6 @@ import com.algotrader.strategy.base.BaseStrategy;
 import com.algotrader.strategy.base.BaseStrategyConfig;
 import com.algotrader.strategy.base.MarketSnapshot;
 import com.algotrader.strategy.base.StrategyContext;
-import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -37,8 +35,6 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
@@ -74,9 +70,6 @@ import org.springframework.stereotype.Service;
 public class StrategyEngine {
 
     private static final Logger log = LoggerFactory.getLogger(StrategyEngine.class);
-
-    /** Parses strike and option type from NSE option trading symbols (e.g., NIFTY2621725400PE → 25400, PE). */
-    private static final Pattern OPTION_SYMBOL_PATTERN = Pattern.compile(".*?(\\d+\\.?\\d*)(CE|PE)$");
 
     /** Active strategy instances keyed by strategy ID. */
     private final ConcurrentHashMap<String, BaseStrategy> activeStrategies = new ConcurrentHashMap<>();
@@ -570,6 +563,7 @@ public class StrategyEngine {
 
     /**
      * Updates the status of a persisted strategy in H2.
+     * Uses targeted JPQL UPDATE to avoid re-encoding the JSON config column.
      */
     private void persistStatusChange(String strategyId, StrategyStatus newStatus) {
         persistStatusChange(strategyId, newStatus, null, null);
@@ -577,19 +571,18 @@ public class StrategyEngine {
 
     /**
      * Updates the status and an optional timestamp field of a persisted strategy in H2.
+     * Uses targeted JPQL UPDATE to avoid re-encoding the JSON config column.
      */
     private void persistStatusChange(
             String strategyId, StrategyStatus newStatus, String timestampField, LocalDateTime timestamp) {
         try {
-            strategyJpaRepository.findById(strategyId).ifPresent(entity -> {
-                entity.setStatus(newStatus);
-                if ("deployedAt".equals(timestampField) && timestamp != null) {
-                    entity.setDeployedAt(timestamp);
-                } else if ("closedAt".equals(timestampField) && timestamp != null) {
-                    entity.setClosedAt(timestamp);
-                }
-                strategyJpaRepository.save(entity);
-            });
+            if ("deployedAt".equals(timestampField) && timestamp != null) {
+                strategyJpaRepository.updateStatusAndDeployedAt(strategyId, newStatus, timestamp);
+            } else if ("closedAt".equals(timestampField) && timestamp != null) {
+                strategyJpaRepository.updateStatusAndClosedAt(strategyId, newStatus, timestamp);
+            } else {
+                strategyJpaRepository.updateStatus(strategyId, newStatus);
+            }
         } catch (Exception e) {
             log.error("Failed to persist status change for strategy {}: {}", strategyId, e.getMessage(), e);
         }
@@ -644,16 +637,18 @@ public class StrategyEngine {
      */
     private void createLegsFromExecutedOrders(String strategyId, List<OrderRequest> executedOrders) {
         for (OrderRequest order : executedOrders) {
-            InstrumentType optionType = deriveOptionType(order.getTradingSymbol());
-            BigDecimal strike = deriveStrike(order.getTradingSymbol());
+            var instrument = instrumentService
+                    .findByToken(order.getInstrumentToken())
+                    .orElseThrow(() ->
+                            new ResourceNotFoundException("Instrument", String.valueOf(order.getInstrumentToken())));
             // Signed quantity: SELL orders get negative quantity
             int signedQuantity = order.getSide() == OrderSide.SELL ? -order.getQuantity() : order.getQuantity();
 
             StrategyLegEntity legEntity = StrategyLegEntity.builder()
                     .id(UUID.randomUUID().toString())
                     .strategyId(strategyId)
-                    .optionType(optionType)
-                    .strike(strike)
+                    .optionType(instrument.getType())
+                    .strike(instrument.getStrike())
                     .quantity(signedQuantity)
                     .build();
             strategyLegJpaRepository.save(legEntity);
@@ -663,7 +658,7 @@ public class StrategyEngine {
                     strategyId,
                     legEntity.getId(),
                     order.getTradingSymbol(),
-                    strike,
+                    instrument.getStrike(),
                     signedQuantity);
         }
     }
@@ -775,41 +770,22 @@ public class StrategyEngine {
 
     /**
      * Checks if a leg entity matches the instrument from an order request
-     * by comparing strike and option type.
+     * by comparing strike and option type via instrument cache lookup.
      */
     private boolean matchesInstrument(StrategyLegEntity leg, OrderRequest order) {
-        InstrumentType orderOptionType = deriveOptionType(order.getTradingSymbol());
-        BigDecimal orderStrike = deriveStrike(order.getTradingSymbol());
-        return leg.getOptionType() == orderOptionType
-                && leg.getStrike() != null
-                && orderStrike != null
-                && leg.getStrike().compareTo(orderStrike) == 0;
+        return instrumentService
+                .findByToken(order.getInstrumentToken())
+                .map(inst -> leg.getOptionType() == inst.getType()
+                        && leg.getStrike() != null
+                        && inst.getStrike() != null
+                        && leg.getStrike().compareTo(inst.getStrike()) == 0)
+                .orElse(false);
     }
 
     /** Returns instrumentToken if it can be inferred from the leg+order combo, for already-linked check. */
     private Long tokenFromLeg(StrategyLegEntity leg, OrderRequest order) {
         if (matchesInstrument(leg, order)) {
             return order.getInstrumentToken();
-        }
-        return null;
-    }
-
-    private InstrumentType deriveOptionType(String tradingSymbol) {
-        if (tradingSymbol == null) return null;
-        if (tradingSymbol.endsWith("CE")) return InstrumentType.CE;
-        if (tradingSymbol.endsWith("PE")) return InstrumentType.PE;
-        return null;
-    }
-
-    private BigDecimal deriveStrike(String tradingSymbol) {
-        if (tradingSymbol == null) return null;
-        Matcher matcher = OPTION_SYMBOL_PATTERN.matcher(tradingSymbol);
-        if (matcher.matches()) {
-            try {
-                return new BigDecimal(matcher.group(1));
-            } catch (NumberFormatException e) {
-                return null;
-            }
         }
         return null;
     }

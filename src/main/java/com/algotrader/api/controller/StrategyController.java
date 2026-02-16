@@ -10,10 +10,13 @@ import com.algotrader.domain.enums.InstrumentType;
 import com.algotrader.domain.enums.OrderSide;
 import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.domain.model.AdjustmentAction;
+import com.algotrader.domain.model.AdjustmentRule;
 import com.algotrader.domain.model.NewLegDefinition;
 import com.algotrader.domain.model.Position;
 import com.algotrader.entity.StrategyLegEntity;
+import com.algotrader.mapper.AdjustmentRuleMapper;
 import com.algotrader.mapper.JsonHelper;
+import com.algotrader.repository.jpa.AdjustmentRuleJpaRepository;
 import com.algotrader.repository.jpa.StrategyLegJpaRepository;
 import com.algotrader.strategy.adoption.AdoptionResult;
 import com.algotrader.strategy.adoption.PositionAdoptionService;
@@ -79,14 +82,20 @@ public class StrategyController {
     private final StrategyEngine strategyEngine;
     private final PositionAdoptionService positionAdoptionService;
     private final StrategyLegJpaRepository strategyLegJpaRepository;
+    private final AdjustmentRuleJpaRepository adjustmentRuleJpaRepository;
+    private final AdjustmentRuleMapper adjustmentRuleMapper;
 
     public StrategyController(
             StrategyEngine strategyEngine,
             PositionAdoptionService positionAdoptionService,
-            StrategyLegJpaRepository strategyLegJpaRepository) {
+            StrategyLegJpaRepository strategyLegJpaRepository,
+            AdjustmentRuleJpaRepository adjustmentRuleJpaRepository,
+            AdjustmentRuleMapper adjustmentRuleMapper) {
         this.strategyEngine = strategyEngine;
         this.positionAdoptionService = positionAdoptionService;
         this.strategyLegJpaRepository = strategyLegJpaRepository;
+        this.adjustmentRuleJpaRepository = adjustmentRuleJpaRepository;
+        this.adjustmentRuleMapper = adjustmentRuleMapper;
     }
 
     /**
@@ -431,6 +440,16 @@ public class StrategyController {
         summary.put("deployedAt", strategy.getEntryTime());
         summary.put("totalPnl", computeTotalPnl(strategy));
         summary.put("legs", buildLegs(id));
+        // Minimal position data for FE live P&L calculation via tick subscriptions
+        summary.put(
+                "positions",
+                strategy.getPositions().stream()
+                        .map(p -> Map.of(
+                                "instrumentToken", p.getInstrumentToken(),
+                                "averagePrice", p.getAveragePrice(),
+                                "quantity", p.getQuantity(),
+                                "tradingSymbol", p.getTradingSymbol()))
+                        .toList());
         return summary;
     }
 
@@ -441,6 +460,9 @@ public class StrategyController {
 
         // Config exit parameters (type-specific)
         detail.put("config", buildConfigSummary(strategy.getConfig()));
+
+        // Adjustment rules from H2 (not stored in-memory on BaseStrategy)
+        detail.put("adjustmentRules", buildAdjustmentRules(id));
 
         return detail;
     }
@@ -461,6 +483,12 @@ public class StrategyController {
                     return legMap;
                 })
                 .toList();
+    }
+
+    /** Fetches adjustment rules from H2, maps to domain objects for JSON serialization. */
+    private List<AdjustmentRule> buildAdjustmentRules(String strategyId) {
+        return adjustmentRuleMapper.toDomainList(
+                adjustmentRuleJpaRepository.findByStrategyIdOrderByPriorityAsc(strategyId));
     }
 
     /**

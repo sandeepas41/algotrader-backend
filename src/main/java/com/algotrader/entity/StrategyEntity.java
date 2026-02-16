@@ -61,7 +61,7 @@ public class StrategyEntity {
     private LocalDate expiry;
 
     /** Strategy-type-specific parameters as JSON (e.g., StraddleConfig, IronCondorConfig). */
-    @Column(columnDefinition = "JSON")
+    @Column(columnDefinition = "CLOB")
     private String config;
 
     @Column(name = "total_pnl", precision = 15, scale = 2)

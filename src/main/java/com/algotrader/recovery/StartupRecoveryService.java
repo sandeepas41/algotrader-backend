@@ -263,7 +263,10 @@ public class StartupRecoveryService {
         for (StrategyEntity entity : restorableEntities) {
             try {
                 // Deserialize polymorphic config from JSON (uses @JsonTypeInfo on BaseStrategyConfig)
-                BaseStrategyConfig config = JsonHelper.fromJson(entity.getConfig(), BaseStrategyConfig.class);
+                // H2 JSON column wraps the config string in extra quote layers — unwrap until
+                // we get the actual JSON object (starts with '{')
+                String configJson = unwrapJsonString(entity.getConfig());
+                BaseStrategyConfig config = JsonHelper.fromJson(configJson, BaseStrategyConfig.class);
 
                 // Recreate strategy instance with original ID
                 BaseStrategy strategy =
@@ -277,8 +280,7 @@ public class StartupRecoveryService {
 
                 // All restored strategies come back as PAUSED for safety
                 strategy.pause();
-                entity.setStatus(StrategyStatus.PAUSED);
-                strategyJpaRepository.save(entity);
+                strategyJpaRepository.updateStatus(entity.getId(), StrategyStatus.PAUSED);
 
                 resumedCount++;
                 log.info(
@@ -339,5 +341,25 @@ public class StartupRecoveryService {
                 strategy.setEntryPremium(totalPremium.divide(BigDecimal.valueOf(totalQuantity), MathContext.DECIMAL64));
             }
         }
+    }
+
+    /**
+     * Unwraps a JSON string that may have been double/triple-encoded by H2's JSON column type.
+     * H2 stores String values in JSON columns as quoted JSON strings, so a config like
+     * {"@type":"STRADDLE",...} gets stored as "\"{\\"@type\\":\\"STRADDLE\\",...}\"".
+     * This method peels off quote layers until we reach the raw JSON object.
+     */
+    static String unwrapJsonString(String json) {
+        if (json == null) return null;
+        String result = json.trim();
+        // Keep unwrapping while the value is a JSON-encoded string (starts with quote)
+        while (result.startsWith("\"")) {
+            try {
+                result = JsonHelper.fromJson(result, String.class);
+            } catch (Exception e) {
+                break;
+            }
+        }
+        return result;
     }
 }

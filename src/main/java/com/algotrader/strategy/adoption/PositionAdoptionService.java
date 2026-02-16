@@ -3,6 +3,7 @@ package com.algotrader.strategy.adoption;
 import com.algotrader.core.engine.StrategyEngine;
 import com.algotrader.domain.enums.InstrumentType;
 import com.algotrader.domain.enums.StrategyType;
+import com.algotrader.domain.model.Instrument;
 import com.algotrader.domain.model.Position;
 import com.algotrader.entity.StrategyLegEntity;
 import com.algotrader.exception.BusinessException;
@@ -10,6 +11,7 @@ import com.algotrader.exception.ErrorCode;
 import com.algotrader.exception.ResourceNotFoundException;
 import com.algotrader.repository.jpa.StrategyLegJpaRepository;
 import com.algotrader.repository.redis.PositionRedisRepository;
+import com.algotrader.service.InstrumentService;
 import com.algotrader.strategy.base.BaseStrategy;
 import java.math.BigDecimal;
 import java.math.MathContext;
@@ -18,8 +20,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -59,13 +59,6 @@ public class PositionAdoptionService {
 
     private static final Logger log = LoggerFactory.getLogger(PositionAdoptionService.class);
 
-    /**
-     * Parses strike and option type from NSE option trading symbols.
-     * Format: UNDERLYING + EXPIRY_DIGITS + STRIKE + CE/PE
-     * Example: NIFTY2560519500CE → strike=19500, type=CE
-     */
-    private static final Pattern OPTION_SYMBOL_PATTERN = Pattern.compile(".*?(\\d+\\.?\\d*)(CE|PE)$");
-
     private static final Set<StrategyType> CE_ONLY_STRATEGIES = Set.of(StrategyType.BULL_CALL_SPREAD);
     private static final Set<StrategyType> PE_ONLY_STRATEGIES =
             Set.of(StrategyType.BULL_PUT_SPREAD, StrategyType.BEAR_PUT_SPREAD);
@@ -74,16 +67,19 @@ public class PositionAdoptionService {
     private final StrategyLegJpaRepository strategyLegJpaRepository;
     private final PositionAllocationService positionAllocationService;
     private final StrategyEngine strategyEngine;
+    private final InstrumentService instrumentService;
 
     public PositionAdoptionService(
             PositionRedisRepository positionRedisRepository,
             StrategyLegJpaRepository strategyLegJpaRepository,
             PositionAllocationService positionAllocationService,
-            StrategyEngine strategyEngine) {
+            StrategyEngine strategyEngine,
+            InstrumentService instrumentService) {
         this.positionRedisRepository = positionRedisRepository;
         this.strategyLegJpaRepository = strategyLegJpaRepository;
         this.positionAllocationService = positionAllocationService;
         this.strategyEngine = strategyEngine;
+        this.instrumentService = instrumentService;
     }
 
     // ========================
@@ -178,9 +174,13 @@ public class PositionAdoptionService {
         validateUnderlying(position, strategy, warnings);
         validateOptionTypeCompatibility(position, strategy, warnings);
 
-        // Derive option type and strike from trading symbol
-        InstrumentType optionType = deriveOptionType(position.getTradingSymbol());
-        BigDecimal strike = deriveStrike(position.getTradingSymbol());
+        // Look up instrument from cache for accurate strike and option type
+        Instrument instrument = instrumentService
+                .findByToken(position.getInstrumentToken())
+                .orElseThrow(() ->
+                        new ResourceNotFoundException("Instrument", String.valueOf(position.getInstrumentToken())));
+        InstrumentType optionType = instrument.getType();
+        BigDecimal strike = instrument.getStrike();
 
         // Create StrategyLeg
         StrategyLegEntity legEntity = StrategyLegEntity.builder()
@@ -282,47 +282,6 @@ public class PositionAdoptionService {
                 .recalculatedEntryPremium(entryPremium)
                 .warnings(List.of())
                 .build();
-    }
-
-    // ========================
-    // SYMBOL PARSING
-    // ========================
-
-    /**
-     * Derives InstrumentType (CE or PE) from a trading symbol suffix.
-     * Returns null for non-option symbols (e.g., futures, equity).
-     */
-    InstrumentType deriveOptionType(String tradingSymbol) {
-        if (tradingSymbol == null) {
-            return null;
-        }
-        if (tradingSymbol.endsWith("CE")) {
-            return InstrumentType.CE;
-        }
-        if (tradingSymbol.endsWith("PE")) {
-            return InstrumentType.PE;
-        }
-        return null;
-    }
-
-    /**
-     * Derives strike price from a trading symbol.
-     * NSE option symbols end with digits followed by CE/PE (e.g., NIFTY2560519500CE → 19500).
-     * Returns null if the strike cannot be parsed.
-     */
-    BigDecimal deriveStrike(String tradingSymbol) {
-        if (tradingSymbol == null) {
-            return null;
-        }
-        Matcher matcher = OPTION_SYMBOL_PATTERN.matcher(tradingSymbol);
-        if (matcher.matches()) {
-            try {
-                return new BigDecimal(matcher.group(1));
-            } catch (NumberFormatException e) {
-                return null;
-            }
-        }
-        return null;
     }
 
     // ========================

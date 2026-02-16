@@ -10,12 +10,14 @@ import static org.mockito.Mockito.when;
 import com.algotrader.core.engine.StrategyEngine;
 import com.algotrader.domain.enums.InstrumentType;
 import com.algotrader.domain.enums.StrategyType;
+import com.algotrader.domain.model.Instrument;
 import com.algotrader.domain.model.Position;
 import com.algotrader.entity.StrategyLegEntity;
 import com.algotrader.exception.BusinessException;
 import com.algotrader.exception.ResourceNotFoundException;
 import com.algotrader.repository.jpa.StrategyLegJpaRepository;
 import com.algotrader.repository.redis.PositionRedisRepository;
+import com.algotrader.service.InstrumentService;
 import com.algotrader.strategy.adoption.AdoptionResult;
 import com.algotrader.strategy.adoption.PositionAdoptionService;
 import com.algotrader.strategy.adoption.PositionAllocationService;
@@ -53,6 +55,9 @@ class PositionAdoptionServiceTest {
     private StrategyEngine strategyEngine;
 
     @Mock
+    private InstrumentService instrumentService;
+
+    @Mock
     private BaseStrategy strategy;
 
     @InjectMocks
@@ -69,7 +74,8 @@ class PositionAdoptionServiceTest {
         @Test
         @DisplayName("creates StrategyLeg and returns result with entry premium")
         void successfulAdopt() {
-            Position position = shortPosition("P1", "NIFTY2560519500CE", -750, BigDecimal.valueOf(120));
+            Position position = shortPosition("P1", "NIFTY2560519500CE", 1001L, -750, BigDecimal.valueOf(120));
+            stubInstrument(1001L, BigDecimal.valueOf(19500), InstrumentType.CE);
             setupStrategyMock("STR-1", "NIFTY", StrategyType.STRADDLE);
             when(positionRedisRepository.findById("P1")).thenReturn(Optional.of(position));
             when(positionAllocationService.getUnmanagedQuantity("P1", -750)).thenReturn(750);
@@ -91,7 +97,7 @@ class PositionAdoptionServiceTest {
             assertThat(savedLeg.getPositionId()).isEqualTo("P1");
             assertThat(savedLeg.getQuantity()).isEqualTo(-300);
             assertThat(savedLeg.getOptionType()).isEqualTo(InstrumentType.CE);
-            assertThat(savedLeg.getStrike()).isEqualByComparingTo(BigDecimal.valueOf(2560519500L));
+            assertThat(savedLeg.getStrike()).isEqualByComparingTo(BigDecimal.valueOf(19500));
 
             // Verify position added to strategy in-memory
             verify(strategy).addPosition(position);
@@ -103,7 +109,8 @@ class PositionAdoptionServiceTest {
         @Test
         @DisplayName("adopts long position with positive quantity")
         void adoptLongPosition() {
-            Position position = longPosition("P1", "NIFTY2560519500CE", 300, BigDecimal.valueOf(120));
+            Position position = longPosition("P1", "NIFTY2560519500CE", 1001L, 300, BigDecimal.valueOf(120));
+            stubInstrument(1001L, BigDecimal.valueOf(19500), InstrumentType.CE);
             setupStrategyMock("STR-1", "NIFTY", StrategyType.BULL_CALL_SPREAD);
             when(positionRedisRepository.findById("P1")).thenReturn(Optional.of(position));
             when(positionAllocationService.getUnmanagedQuantity("P1", 300)).thenReturn(300);
@@ -120,7 +127,8 @@ class PositionAdoptionServiceTest {
         @Test
         @DisplayName("does not add position to in-memory list if already present")
         void doesNotDuplicateInMemory() {
-            Position position = shortPosition("P1", "NIFTY2560519500CE", -750, BigDecimal.valueOf(120));
+            Position position = shortPosition("P1", "NIFTY2560519500CE", 1001L, -750, BigDecimal.valueOf(120));
+            stubInstrument(1001L, BigDecimal.valueOf(19500), InstrumentType.CE);
             setupStrategyMock("STR-1", "NIFTY", StrategyType.STRADDLE);
             when(positionRedisRepository.findById("P1")).thenReturn(Optional.of(position));
             when(positionAllocationService.getUnmanagedQuantity("P1", -750)).thenReturn(750);
@@ -136,7 +144,8 @@ class PositionAdoptionServiceTest {
         @Test
         @DisplayName("returns warnings for underlying mismatch but still succeeds")
         void warningForUnderlyingMismatch() {
-            Position position = shortPosition("P1", "BANKNIFTY2560550000CE", -750, BigDecimal.valueOf(200));
+            Position position = shortPosition("P1", "BANKNIFTY2560550000CE", 2001L, -750, BigDecimal.valueOf(200));
+            stubInstrument(2001L, BigDecimal.valueOf(50000), InstrumentType.CE);
             setupStrategyMock("STR-1", "NIFTY", StrategyType.STRADDLE);
             when(positionRedisRepository.findById("P1")).thenReturn(Optional.of(position));
             when(positionAllocationService.getUnmanagedQuantity("P1", -750)).thenReturn(750);
@@ -152,7 +161,8 @@ class PositionAdoptionServiceTest {
         @Test
         @DisplayName("returns warning for CE position into PE-only strategy")
         void warningForOptionTypeMismatch() {
-            Position position = shortPosition("P1", "NIFTY2560519500CE", -750, BigDecimal.valueOf(120));
+            Position position = shortPosition("P1", "NIFTY2560519500CE", 1001L, -750, BigDecimal.valueOf(120));
+            stubInstrument(1001L, BigDecimal.valueOf(19500), InstrumentType.CE);
             setupStrategyMock("STR-1", "NIFTY", StrategyType.BULL_PUT_SPREAD);
             when(positionRedisRepository.findById("P1")).thenReturn(Optional.of(position));
             when(positionAllocationService.getUnmanagedQuantity("P1", -750)).thenReturn(750);
@@ -186,7 +196,7 @@ class PositionAdoptionServiceTest {
         @Test
         @DisplayName("throws when quantity is zero")
         void zeroQuantity() {
-            Position position = shortPosition("P1", "NIFTY2560519500CE", -750, BigDecimal.valueOf(120));
+            Position position = shortPosition("P1", "NIFTY2560519500CE", 1001L, -750, BigDecimal.valueOf(120));
             when(positionRedisRepository.findById("P1")).thenReturn(Optional.of(position));
 
             assertThatThrownBy(() -> positionAdoptionService.adoptPosition(strategy, "P1", 0))
@@ -197,7 +207,7 @@ class PositionAdoptionServiceTest {
         @Test
         @DisplayName("throws when quantity sign does not match position sign")
         void signMismatch() {
-            Position position = shortPosition("P1", "NIFTY2560519500CE", -750, BigDecimal.valueOf(120));
+            Position position = shortPosition("P1", "NIFTY2560519500CE", 1001L, -750, BigDecimal.valueOf(120));
             when(positionRedisRepository.findById("P1")).thenReturn(Optional.of(position));
 
             assertThatThrownBy(() -> positionAdoptionService.adoptPosition(strategy, "P1", 300))
@@ -208,7 +218,7 @@ class PositionAdoptionServiceTest {
         @Test
         @DisplayName("throws when quantity exceeds unmanaged remainder")
         void exceedsUnmanagedRemainder() {
-            Position position = shortPosition("P1", "NIFTY2560519500CE", -750, BigDecimal.valueOf(120));
+            Position position = shortPosition("P1", "NIFTY2560519500CE", 1001L, -750, BigDecimal.valueOf(120));
             when(strategy.getId()).thenReturn("STR-1");
             when(positionRedisRepository.findById("P1")).thenReturn(Optional.of(position));
             // Only 150 unmanaged (600 already allocated)
@@ -222,7 +232,7 @@ class PositionAdoptionServiceTest {
         @Test
         @DisplayName("throws when position already linked to strategy")
         void alreadyLinked() {
-            Position position = shortPosition("P1", "NIFTY2560519500CE", -750, BigDecimal.valueOf(120));
+            Position position = shortPosition("P1", "NIFTY2560519500CE", 1001L, -750, BigDecimal.valueOf(120));
             when(strategy.getId()).thenReturn("STR-1");
             when(positionRedisRepository.findById("P1")).thenReturn(Optional.of(position));
             when(positionAllocationService.getUnmanagedQuantity("P1", -750)).thenReturn(750);
@@ -354,10 +364,6 @@ class PositionAdoptionServiceTest {
     }
 
     // ========================
-    // SYMBOL PARSING (verified indirectly through adopt — CE/PE symbol creates correct optionType/strike on leg)
-    // ========================
-
-    // ========================
     // ADOPTION RESULT
     // ========================
 
@@ -401,21 +407,32 @@ class PositionAdoptionServiceTest {
         when(strategy.getType()).thenReturn(type);
     }
 
-    private static Position shortPosition(String id, String tradingSymbol, int quantity, BigDecimal avgPrice) {
+    private static Position shortPosition(
+            String id, String tradingSymbol, long instrumentToken, int quantity, BigDecimal avgPrice) {
         return Position.builder()
                 .id(id)
                 .tradingSymbol(tradingSymbol)
+                .instrumentToken(instrumentToken)
                 .quantity(quantity)
                 .averagePrice(avgPrice)
                 .build();
     }
 
-    private static Position longPosition(String id, String tradingSymbol, int quantity, BigDecimal avgPrice) {
+    private static Position longPosition(
+            String id, String tradingSymbol, long instrumentToken, int quantity, BigDecimal avgPrice) {
         return Position.builder()
                 .id(id)
                 .tradingSymbol(tradingSymbol)
+                .instrumentToken(instrumentToken)
                 .quantity(quantity)
                 .averagePrice(avgPrice)
                 .build();
+    }
+
+    /** Stubs instrumentService.findByToken to return an instrument with given strike and type. */
+    private void stubInstrument(long token, BigDecimal strike, InstrumentType type) {
+        Instrument instrument =
+                Instrument.builder().token(token).strike(strike).type(type).build();
+        when(instrumentService.findByToken(token)).thenReturn(Optional.of(instrument));
     }
 }
