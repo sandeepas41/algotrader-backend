@@ -24,6 +24,7 @@ import com.algotrader.event.TickEvent;
 import com.algotrader.exception.ResourceNotFoundException;
 import com.algotrader.oms.JournaledMultiLegExecutor;
 import com.algotrader.oms.OrderRequest;
+import com.algotrader.repository.jpa.StrategyJpaRepository;
 import com.algotrader.service.InstrumentService;
 import com.algotrader.strategy.StrategyFactory;
 import com.algotrader.strategy.base.BaseStrategy;
@@ -35,6 +36,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -55,6 +57,7 @@ class StrategyEngineTest {
     private EventPublisherHelper eventPublisherHelper;
     private JournaledMultiLegExecutor journaledMultiLegExecutor;
     private InstrumentService instrumentService;
+    private StrategyJpaRepository strategyJpaRepository;
     private StrategyEngine strategyEngine;
 
     private BaseStrategyConfig defaultConfig;
@@ -65,9 +68,17 @@ class StrategyEngineTest {
         eventPublisherHelper = mock(EventPublisherHelper.class);
         journaledMultiLegExecutor = mock(JournaledMultiLegExecutor.class);
         instrumentService = mock(InstrumentService.class);
+        strategyJpaRepository = mock(StrategyJpaRepository.class);
 
-        strategyEngine =
-                new StrategyEngine(strategyFactory, eventPublisherHelper, journaledMultiLegExecutor, instrumentService);
+        // Stub findById to return empty by default (for persistence calls)
+        when(strategyJpaRepository.findById(anyString())).thenReturn(Optional.empty());
+
+        strategyEngine = new StrategyEngine(
+                strategyFactory,
+                eventPublisherHelper,
+                journaledMultiLegExecutor,
+                instrumentService,
+                strategyJpaRepository);
 
         defaultConfig = BaseStrategyConfig.builder()
                 .underlying("NIFTY")

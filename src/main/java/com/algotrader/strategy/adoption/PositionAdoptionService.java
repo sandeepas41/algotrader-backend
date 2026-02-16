@@ -22,9 +22,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
-import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
 /**
@@ -94,12 +91,36 @@ public class PositionAdoptionService {
     // ========================
 
     /**
-     * Populates the StrategyEngine's reverse index (positionId → strategyIds) on startup
-     * by reading all strategy legs with non-null positionId from the database.
+     * Cleans up orphaned strategy legs (legs whose strategyId has no corresponding
+     * in-memory strategy) and populates the reverse index for surviving legs.
+     *
+     * <p>Orphaned legs occur when the server restarts and strategies from a previous
+     * session are no longer running. Without cleanup, the allocation service would
+     * incorrectly mark positions as "managed" by non-existent strategies.
+     *
+     * <p>Called by {@link com.algotrader.recovery.StartupRecoveryService} AFTER strategies
+     * are restored from H2, ensuring the in-memory strategy map is populated first.
      */
-    @EventListener(ApplicationReadyEvent.class)
-    @Order(1) // Early: before strategies start evaluating
     public void populatePositionIndexOnStartup() {
+        // Clean up orphaned legs first
+        Set<String> activeStrategyIds = strategyEngine.getActiveStrategies().keySet();
+        List<StrategyLegEntity> allLegs = strategyLegJpaRepository.findAll();
+        List<StrategyLegEntity> orphanedLegs = allLegs.stream()
+                .filter(leg -> !activeStrategyIds.contains(leg.getStrategyId()))
+                .toList();
+
+        if (!orphanedLegs.isEmpty()) {
+            strategyLegJpaRepository.deleteAll(orphanedLegs);
+            log.info(
+                    "Cleaned up {} orphaned strategy legs from {} defunct strategies",
+                    orphanedLegs.size(),
+                    orphanedLegs.stream()
+                            .map(StrategyLegEntity::getStrategyId)
+                            .distinct()
+                            .count());
+        }
+
+        // Populate reverse index from surviving legs
         List<StrategyLegEntity> linkedLegs = strategyLegJpaRepository.findByPositionIdIsNotNull();
         List<Map.Entry<String, String>> links = linkedLegs.stream()
                 .<Map.Entry<String, String>>map(leg -> Map.entry(leg.getPositionId(), leg.getStrategyId()))

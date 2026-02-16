@@ -18,9 +18,13 @@ import com.algotrader.observability.DecisionLogger;
 import com.algotrader.reconciliation.PositionReconciliationService;
 import com.algotrader.recovery.StartupRecoveryService;
 import com.algotrader.repository.jpa.ExecutionJournalJpaRepository;
+import com.algotrader.repository.jpa.StrategyJpaRepository;
+import com.algotrader.repository.jpa.StrategyLegJpaRepository;
 import com.algotrader.repository.redis.PositionRedisRepository;
 import com.algotrader.risk.AccountRiskChecker;
 import com.algotrader.risk.KillSwitchService;
+import com.algotrader.strategy.StrategyFactory;
+import com.algotrader.strategy.adoption.PositionAdoptionService;
 import java.math.BigDecimal;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -71,11 +75,27 @@ class StartupRecoveryServiceTest {
     @Mock
     private DecisionLogger decisionLogger;
 
+    @Mock
+    private StrategyJpaRepository strategyJpaRepository;
+
+    @Mock
+    private StrategyLegJpaRepository strategyLegJpaRepository;
+
+    @Mock
+    private StrategyFactory strategyFactory;
+
+    @Mock
+    private PositionAdoptionService positionAdoptionService;
+
     private StartupRecoveryService startupRecoveryService;
 
     @BeforeEach
     void setUp() {
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        // Default: no strategies to restore from H2 (lenient: not used in kill switch test)
+        org.mockito.Mockito.lenient()
+                .when(strategyJpaRepository.findRestorableStrategies())
+                .thenReturn(List.of());
 
         startupRecoveryService = new StartupRecoveryService(
                 executionJournalJpaRepository,
@@ -86,7 +106,11 @@ class StartupRecoveryServiceTest {
                 killSwitchService,
                 redisTemplate,
                 applicationEventPublisher,
-                decisionLogger);
+                decisionLogger,
+                strategyJpaRepository,
+                strategyLegJpaRepository,
+                strategyFactory,
+                positionAdoptionService);
     }
 
     @Test

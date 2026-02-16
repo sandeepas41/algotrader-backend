@@ -27,6 +27,10 @@ public interface StrategyJpaRepository extends JpaRepository<StrategyEntity, Str
 
     List<StrategyEntity> findByUnderlyingAndExpiry(String underlying, LocalDate expiry);
 
+    /** Finds strategies eligible for restoration on startup (everything except CLOSED/CLOSING). */
+    @Query("SELECT s FROM StrategyEntity s WHERE s.status NOT IN ('CLOSED', 'CLOSING')")
+    List<StrategyEntity> findRestorableStrategies();
+
     @Query("SELECT s FROM StrategyEntity s WHERE s.closedAt >= :since ORDER BY s.closedAt DESC")
     List<StrategyEntity> findRecentlyClosed(@Param("since") LocalDateTime since);
 }

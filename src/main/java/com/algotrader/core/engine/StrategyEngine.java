@@ -6,11 +6,14 @@ import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.domain.model.AdjustmentAction;
 import com.algotrader.domain.model.Position;
 import com.algotrader.domain.model.Tick;
+import com.algotrader.entity.StrategyEntity;
 import com.algotrader.event.EventPublisherHelper;
 import com.algotrader.event.PositionEvent;
 import com.algotrader.event.TickEvent;
 import com.algotrader.exception.ResourceNotFoundException;
+import com.algotrader.mapper.JsonHelper;
 import com.algotrader.oms.JournaledMultiLegExecutor;
+import com.algotrader.repository.jpa.StrategyJpaRepository;
 import com.algotrader.service.InstrumentService;
 import com.algotrader.strategy.StrategyFactory;
 import com.algotrader.strategy.base.BaseStrategy;
@@ -79,16 +82,19 @@ public class StrategyEngine {
     private final EventPublisherHelper eventPublisherHelper;
     private final JournaledMultiLegExecutor journaledMultiLegExecutor;
     private final InstrumentService instrumentService;
+    private final StrategyJpaRepository strategyJpaRepository;
 
     public StrategyEngine(
             StrategyFactory strategyFactory,
             EventPublisherHelper eventPublisherHelper,
             JournaledMultiLegExecutor journaledMultiLegExecutor,
-            InstrumentService instrumentService) {
+            InstrumentService instrumentService,
+            StrategyJpaRepository strategyJpaRepository) {
         this.strategyFactory = strategyFactory;
         this.eventPublisherHelper = eventPublisherHelper;
         this.journaledMultiLegExecutor = journaledMultiLegExecutor;
         this.instrumentService = instrumentService;
+        this.strategyJpaRepository = strategyJpaRepository;
     }
 
     // ========================
@@ -125,6 +131,9 @@ public class StrategyEngine {
         }
         strategyLocks.put(strategyId, new ReentrantReadWriteLock());
 
+        // Persist to H2 so strategy survives restarts
+        persistNewStrategy(strategy);
+
         eventPublisherHelper.publishDecision(
                 this, "DEPLOY", "Strategy deployed", strategyId, Map.of("type", type.name(), "name", name));
 
@@ -155,6 +164,7 @@ public class StrategyEngine {
             BaseStrategy strategy = getOrThrow(strategyId);
             StrategyStatus previous = strategy.getStatus();
             strategy.arm();
+            persistStatusChange(strategyId, StrategyStatus.ARMED);
             eventPublisherHelper.publishDecision(
                     this, "LIFECYCLE", "Strategy armed", strategyId, Map.of("previousStatus", previous.name()));
         });
@@ -169,6 +179,7 @@ public class StrategyEngine {
             BaseStrategy strategy = getOrThrow(strategyId);
             StrategyStatus previous = strategy.getStatus();
             strategy.pause();
+            persistStatusChange(strategyId, StrategyStatus.PAUSED);
             eventPublisherHelper.publishDecision(
                     this, "LIFECYCLE", "Strategy paused", strategyId, Map.of("previousStatus", previous.name()));
             // #TODO Task 7.2: Cancel in-flight orders for this strategy when pausing
@@ -183,6 +194,7 @@ public class StrategyEngine {
             BaseStrategy strategy = getOrThrow(strategyId);
             StrategyStatus previous = strategy.getStatus();
             strategy.resume();
+            persistStatusChange(strategyId, StrategyStatus.ACTIVE);
             eventPublisherHelper.publishDecision(
                     this, "LIFECYCLE", "Strategy resumed", strategyId, Map.of("previousStatus", previous.name()));
         });
@@ -196,6 +208,7 @@ public class StrategyEngine {
         withWriteLock(strategyId, () -> {
             BaseStrategy strategy = getOrThrow(strategyId);
             strategy.activateWithAdoptedPositions();
+            persistStatusChange(strategyId, StrategyStatus.ACTIVE, "deployedAt", LocalDateTime.now());
             eventPublisherHelper.publishDecision(
                     this,
                     "LIFECYCLE",
@@ -212,6 +225,7 @@ public class StrategyEngine {
         withWriteLock(strategyId, () -> {
             BaseStrategy strategy = getOrThrow(strategyId);
             strategy.initiateClose();
+            persistStatusChange(strategyId, StrategyStatus.CLOSING);
         });
     }
 
@@ -227,6 +241,7 @@ public class StrategyEngine {
                         "Cannot undeploy strategy in " + strategy.getStatus() + " state. Close it first.");
             }
             strategyLocks.remove(id);
+            persistStatusChange(id, StrategyStatus.CLOSED, "closedAt", LocalDateTime.now());
             eventPublisherHelper.publishDecision(this, "DEPLOY", "Strategy undeployed", id, Map.of());
             return null; // removes from map
         });
@@ -469,8 +484,89 @@ public class StrategyEngine {
     }
 
     // ========================
+    // STARTUP RESTORATION
+    // ========================
+
+    /**
+     * Registers a restored strategy in the active map without deploying it.
+     * Used by StartupRecoveryService to re-populate the in-memory registry from H2.
+     * Injects services and registers locks. Does NOT persist (already in H2) or auto-arm.
+     *
+     * @param strategy the restored strategy instance (from StrategyFactory.restore())
+     */
+    public void registerRestoredStrategy(BaseStrategy strategy) {
+        String strategyId = strategy.getId();
+
+        StrategyContext context = buildContext();
+        strategy.setServices(
+                context.getEventPublisherHelper(),
+                context.getJournaledMultiLegExecutor(),
+                context.getInstrumentService());
+
+        BaseStrategy existing = activeStrategies.putIfAbsent(strategyId, strategy);
+        if (existing != null) {
+            throw new IllegalStateException("Strategy ID collision on restore: " + strategyId);
+        }
+        strategyLocks.put(strategyId, new ReentrantReadWriteLock());
+
+        log.info(
+                "Registered restored strategy: id={}, name={}, type={}",
+                strategyId,
+                strategy.getName(),
+                strategy.getType());
+    }
+
+    // ========================
     // INTERNALS
     // ========================
+
+    /**
+     * Persists a newly deployed strategy to H2.
+     */
+    private void persistNewStrategy(BaseStrategy strategy) {
+        try {
+            StrategyEntity entity = StrategyEntity.builder()
+                    .id(strategy.getId())
+                    .name(strategy.getName())
+                    .type(strategy.getType())
+                    .status(strategy.getStatus())
+                    .underlying(strategy.getConfig().getUnderlying())
+                    .expiry(strategy.getConfig().getExpiry())
+                    .config(JsonHelper.toJson(strategy.getConfig()))
+                    .createdAt(LocalDateTime.now())
+                    .build();
+            strategyJpaRepository.save(entity);
+        } catch (Exception e) {
+            log.error("Failed to persist new strategy {}: {}", strategy.getId(), e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Updates the status of a persisted strategy in H2.
+     */
+    private void persistStatusChange(String strategyId, StrategyStatus newStatus) {
+        persistStatusChange(strategyId, newStatus, null, null);
+    }
+
+    /**
+     * Updates the status and an optional timestamp field of a persisted strategy in H2.
+     */
+    private void persistStatusChange(
+            String strategyId, StrategyStatus newStatus, String timestampField, LocalDateTime timestamp) {
+        try {
+            strategyJpaRepository.findById(strategyId).ifPresent(entity -> {
+                entity.setStatus(newStatus);
+                if ("deployedAt".equals(timestampField) && timestamp != null) {
+                    entity.setDeployedAt(timestamp);
+                } else if ("closedAt".equals(timestampField) && timestamp != null) {
+                    entity.setClosedAt(timestamp);
+                }
+                strategyJpaRepository.save(entity);
+            });
+        } catch (Exception e) {
+            log.error("Failed to persist status change for strategy {}: {}", strategyId, e.getMessage(), e);
+        }
+    }
 
     private StrategyContext buildContext() {
         return StrategyContext.builder()

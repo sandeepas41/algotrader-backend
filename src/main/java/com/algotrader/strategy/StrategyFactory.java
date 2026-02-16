@@ -91,6 +91,23 @@ public class StrategyFactory {
     }
 
     /**
+     * Restores a strategy instance from persistence with its original ID.
+     * Used during startup recovery to rebuild in-memory strategies from H2.
+     * The returned strategy is in CREATED state; caller must set the correct status.
+     *
+     * @param id     the original strategy ID from StrategyEntity
+     * @param type   the strategy type
+     * @param name   the strategy name
+     * @param config the deserialized config (polymorphic via @JsonTypeInfo)
+     * @return a BaseStrategy instance in CREATED state
+     */
+    public BaseStrategy restore(String id, StrategyType type, String name, BaseStrategyConfig config) {
+        BaseStrategy strategy = instantiate(type, id, name, config);
+        log.info("Restored strategy from DB: id={}, type={}, name={}", id, type, name);
+        return strategy;
+    }
+
+    /**
      * Safely casts the base config to the expected strategy-specific config type.
      * Fails fast with a clear message if the wrong config type is passed.
      */

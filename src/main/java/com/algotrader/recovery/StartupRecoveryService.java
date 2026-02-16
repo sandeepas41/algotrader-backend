@@ -6,17 +6,28 @@ import com.algotrader.domain.enums.DecisionSeverity;
 import com.algotrader.domain.enums.DecisionSource;
 import com.algotrader.domain.enums.DecisionType;
 import com.algotrader.domain.enums.JournalStatus;
+import com.algotrader.domain.enums.StrategyStatus;
 import com.algotrader.domain.model.Position;
 import com.algotrader.entity.ExecutionJournalEntity;
+import com.algotrader.entity.StrategyEntity;
+import com.algotrader.entity.StrategyLegEntity;
 import com.algotrader.event.SystemEvent;
 import com.algotrader.event.SystemEventType;
+import com.algotrader.mapper.JsonHelper;
 import com.algotrader.observability.DecisionLogger;
 import com.algotrader.reconciliation.PositionReconciliationService;
 import com.algotrader.repository.jpa.ExecutionJournalJpaRepository;
+import com.algotrader.repository.jpa.StrategyJpaRepository;
+import com.algotrader.repository.jpa.StrategyLegJpaRepository;
 import com.algotrader.repository.redis.PositionRedisRepository;
 import com.algotrader.risk.AccountRiskChecker;
 import com.algotrader.risk.KillSwitchService;
+import com.algotrader.strategy.StrategyFactory;
+import com.algotrader.strategy.adoption.PositionAdoptionService;
+import com.algotrader.strategy.base.BaseStrategy;
+import com.algotrader.strategy.base.BaseStrategyConfig;
 import java.math.BigDecimal;
+import java.math.MathContext;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
@@ -57,6 +68,10 @@ public class StartupRecoveryService {
     private final RedisTemplate<String, String> redisTemplate;
     private final ApplicationEventPublisher applicationEventPublisher;
     private final DecisionLogger decisionLogger;
+    private final StrategyJpaRepository strategyJpaRepository;
+    private final StrategyLegJpaRepository strategyLegJpaRepository;
+    private final StrategyFactory strategyFactory;
+    private final PositionAdoptionService positionAdoptionService;
 
     public StartupRecoveryService(
             ExecutionJournalJpaRepository executionJournalJpaRepository,
@@ -67,7 +82,11 @@ public class StartupRecoveryService {
             KillSwitchService killSwitchService,
             RedisTemplate<String, String> redisTemplate,
             ApplicationEventPublisher applicationEventPublisher,
-            DecisionLogger decisionLogger) {
+            DecisionLogger decisionLogger,
+            StrategyJpaRepository strategyJpaRepository,
+            StrategyLegJpaRepository strategyLegJpaRepository,
+            StrategyFactory strategyFactory,
+            PositionAdoptionService positionAdoptionService) {
         this.executionJournalJpaRepository = executionJournalJpaRepository;
         this.positionReconciliationService = positionReconciliationService;
         this.positionRedisRepository = positionRedisRepository;
@@ -77,6 +96,10 @@ public class StartupRecoveryService {
         this.redisTemplate = redisTemplate;
         this.applicationEventPublisher = applicationEventPublisher;
         this.decisionLogger = decisionLogger;
+        this.strategyJpaRepository = strategyJpaRepository;
+        this.strategyLegJpaRepository = strategyLegJpaRepository;
+        this.strategyFactory = strategyFactory;
+        this.positionAdoptionService = positionAdoptionService;
     }
 
     /**
@@ -209,18 +232,112 @@ public class StartupRecoveryService {
         }
     }
 
+    /**
+     * Restores strategies from H2 that were active before shutdown.
+     * All restored strategies are set to PAUSED for safety — the trader must
+     * manually resume them after verifying market conditions.
+     *
+     * <p>After all strategies are restored, populates the position→strategy
+     * reverse index via PositionAdoptionService (orphaned leg cleanup + index build).
+     */
     void resumeStrategies(RecoveryResult recoveryResult) {
         if (recoveryResult.isKillSwitchWasActive()) {
             log.warn("Kill switch was active before shutdown, not resuming strategies");
+            // Still populate the position index even if not resuming strategies
+            positionAdoptionService.populatePositionIndexOnStartup();
             return;
         }
 
-        // #TODO: Resume strategies that were ACTIVE before shutdown.
-        // Currently StrategyEngine.pauseAll() pauses in-memory strategies,
-        // but there is no persistent "was-active" flag yet.
-        // When strategy state persistence is added, this will query the DB
-        // for strategies with status ACTIVE and resume them.
-        recoveryResult.setStrategiesResumed(0);
-        log.info("Strategy resumption: no persistent strategy state available yet");
+        List<StrategyEntity> restorableEntities = strategyJpaRepository.findRestorableStrategies();
+
+        if (restorableEntities.isEmpty()) {
+            log.info("No strategies to restore from H2");
+            recoveryResult.setStrategiesResumed(0);
+            positionAdoptionService.populatePositionIndexOnStartup();
+            return;
+        }
+
+        log.info("Found {} strategies to restore from H2", restorableEntities.size());
+        int resumedCount = 0;
+
+        for (StrategyEntity entity : restorableEntities) {
+            try {
+                // Deserialize polymorphic config from JSON (uses @JsonTypeInfo on BaseStrategyConfig)
+                BaseStrategyConfig config = JsonHelper.fromJson(entity.getConfig(), BaseStrategyConfig.class);
+
+                // Recreate strategy instance with original ID
+                BaseStrategy strategy =
+                        strategyFactory.restore(entity.getId(), entity.getType(), entity.getName(), config);
+
+                // Register in StrategyEngine (injects services, adds to activeStrategies map)
+                strategyEngine.registerRestoredStrategy(strategy);
+
+                // Load positions from Redis via strategy legs
+                restoreStrategyPositions(strategy, entity.getId());
+
+                // All restored strategies come back as PAUSED for safety
+                strategy.pause();
+                entity.setStatus(StrategyStatus.PAUSED);
+                strategyJpaRepository.save(entity);
+
+                resumedCount++;
+                log.info(
+                        "Restored strategy {}: name='{}', type={}, positions={}",
+                        entity.getId(),
+                        entity.getName(),
+                        entity.getType(),
+                        strategy.getPositions().size());
+
+            } catch (Exception e) {
+                // Don't fail entire recovery for one bad strategy
+                log.error("Failed to restore strategy {}: {}", entity.getId(), e.getMessage(), e);
+            }
+        }
+
+        recoveryResult.setStrategiesResumed(resumedCount);
+        log.info(
+                "Strategy restoration complete: {} of {} restored (all in PAUSED state)",
+                resumedCount,
+                restorableEntities.size());
+
+        // Now that all strategies are in-memory, build the position→strategy reverse index
+        // and clean up any orphaned legs from strategies that failed to restore
+        positionAdoptionService.populatePositionIndexOnStartup();
+    }
+
+    /**
+     * Loads positions from Redis for a restored strategy by reading its legs from H2.
+     * Recalculates entry premium from current position average prices.
+     */
+    private void restoreStrategyPositions(BaseStrategy strategy, String strategyId) {
+        List<StrategyLegEntity> legs = strategyLegJpaRepository.findByStrategyId(strategyId);
+
+        for (StrategyLegEntity leg : legs) {
+            if (leg.getPositionId() == null) {
+                continue;
+            }
+            positionRedisRepository
+                    .findById(leg.getPositionId())
+                    .ifPresentOrElse(
+                            strategy::addPosition,
+                            () -> log.warn(
+                                    "Leg {} references position {} but position not found in Redis",
+                                    leg.getId(),
+                                    leg.getPositionId()));
+        }
+
+        // Recalculate entry premium from restored positions
+        if (!strategy.getPositions().isEmpty()) {
+            BigDecimal totalPremium = strategy.getPositions().stream()
+                    .filter(p -> p.getAveragePrice() != null)
+                    .map(p -> p.getAveragePrice().multiply(BigDecimal.valueOf(Math.abs(p.getQuantity()))))
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            int totalQuantity = strategy.getPositions().stream()
+                    .mapToInt(p -> Math.abs(p.getQuantity()))
+                    .sum();
+            if (totalQuantity > 0) {
+                strategy.setEntryPremium(totalPremium.divide(BigDecimal.valueOf(totalQuantity), MathContext.DECIMAL64));
+            }
+        }
     }
 }

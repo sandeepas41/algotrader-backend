@@ -22,6 +22,7 @@ import com.algotrader.oms.OrderQueue;
 import com.algotrader.oms.OrderRequest;
 import com.algotrader.oms.OrderRouteResult;
 import com.algotrader.oms.OrderRouter;
+import com.algotrader.repository.jpa.StrategyJpaRepository;
 import com.algotrader.repository.redis.OrderRedisRepository;
 import com.algotrader.repository.redis.PositionRedisRepository;
 import com.algotrader.risk.KillSwitchResult;
@@ -71,8 +72,13 @@ class KillSwitchIntegrationTest {
         InstrumentService instrumentService = mock(InstrumentService.class);
 
         StrategyFactory strategyFactory = new StrategyFactory();
-        strategyEngine =
-                new StrategyEngine(strategyFactory, eventPublisherHelper, journaledMultiLegExecutor, instrumentService);
+        StrategyJpaRepository strategyJpaRepository = mock(StrategyJpaRepository.class);
+        strategyEngine = new StrategyEngine(
+                strategyFactory,
+                eventPublisherHelper,
+                journaledMultiLegExecutor,
+                instrumentService,
+                strategyJpaRepository);
 
         IdempotencyService idempotencyService = mock(IdempotencyService.class);
         OrderQueue orderQueue = new OrderQueue();
