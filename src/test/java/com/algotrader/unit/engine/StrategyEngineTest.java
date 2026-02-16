@@ -25,6 +25,8 @@ import com.algotrader.exception.ResourceNotFoundException;
 import com.algotrader.oms.JournaledMultiLegExecutor;
 import com.algotrader.oms.OrderRequest;
 import com.algotrader.repository.jpa.StrategyJpaRepository;
+import com.algotrader.repository.jpa.StrategyLegJpaRepository;
+import com.algotrader.repository.redis.PositionRedisRepository;
 import com.algotrader.service.InstrumentService;
 import com.algotrader.strategy.StrategyFactory;
 import com.algotrader.strategy.base.BaseStrategy;
@@ -58,6 +60,8 @@ class StrategyEngineTest {
     private JournaledMultiLegExecutor journaledMultiLegExecutor;
     private InstrumentService instrumentService;
     private StrategyJpaRepository strategyJpaRepository;
+    private StrategyLegJpaRepository strategyLegJpaRepository;
+    private PositionRedisRepository positionRedisRepository;
     private StrategyEngine strategyEngine;
 
     private BaseStrategyConfig defaultConfig;
@@ -69,6 +73,8 @@ class StrategyEngineTest {
         journaledMultiLegExecutor = mock(JournaledMultiLegExecutor.class);
         instrumentService = mock(InstrumentService.class);
         strategyJpaRepository = mock(StrategyJpaRepository.class);
+        strategyLegJpaRepository = mock(StrategyLegJpaRepository.class);
+        positionRedisRepository = mock(PositionRedisRepository.class);
 
         // Stub findById to return empty by default (for persistence calls)
         when(strategyJpaRepository.findById(anyString())).thenReturn(Optional.empty());
@@ -78,7 +84,9 @@ class StrategyEngineTest {
                 eventPublisherHelper,
                 journaledMultiLegExecutor,
                 instrumentService,
-                strategyJpaRepository);
+                strategyJpaRepository,
+                strategyLegJpaRepository,
+                positionRedisRepository);
 
         defaultConfig = BaseStrategyConfig.builder()
                 .underlying("NIFTY")

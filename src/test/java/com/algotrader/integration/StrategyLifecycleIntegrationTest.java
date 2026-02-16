@@ -10,6 +10,8 @@ import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.event.EventPublisherHelper;
 import com.algotrader.oms.JournaledMultiLegExecutor;
 import com.algotrader.repository.jpa.StrategyJpaRepository;
+import com.algotrader.repository.jpa.StrategyLegJpaRepository;
+import com.algotrader.repository.redis.PositionRedisRepository;
 import com.algotrader.service.InstrumentService;
 import com.algotrader.strategy.StrategyFactory;
 import com.algotrader.strategy.base.BaseStrategy;
@@ -39,12 +41,16 @@ class StrategyLifecycleIntegrationTest {
 
         StrategyFactory strategyFactory = new StrategyFactory();
         StrategyJpaRepository strategyJpaRepository = mock(StrategyJpaRepository.class);
+        StrategyLegJpaRepository strategyLegJpaRepository = mock(StrategyLegJpaRepository.class);
+        PositionRedisRepository positionRedisRepository = mock(PositionRedisRepository.class);
         strategyEngine = new StrategyEngine(
                 strategyFactory,
                 eventPublisherHelper,
                 journaledMultiLegExecutor,
                 instrumentService,
-                strategyJpaRepository);
+                strategyJpaRepository,
+                strategyLegJpaRepository,
+                positionRedisRepository);
     }
 
     @Test

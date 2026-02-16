@@ -1,34 +1,44 @@
 package com.algotrader.core.engine;
 
 import com.algotrader.domain.enums.ActionType;
+import com.algotrader.domain.enums.InstrumentType;
+import com.algotrader.domain.enums.OrderSide;
 import com.algotrader.domain.enums.StrategyStatus;
 import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.domain.model.AdjustmentAction;
 import com.algotrader.domain.model.Position;
 import com.algotrader.domain.model.Tick;
 import com.algotrader.entity.StrategyEntity;
+import com.algotrader.entity.StrategyLegEntity;
 import com.algotrader.event.EventPublisherHelper;
 import com.algotrader.event.PositionEvent;
 import com.algotrader.event.TickEvent;
 import com.algotrader.exception.ResourceNotFoundException;
 import com.algotrader.mapper.JsonHelper;
 import com.algotrader.oms.JournaledMultiLegExecutor;
+import com.algotrader.oms.OrderRequest;
 import com.algotrader.repository.jpa.StrategyJpaRepository;
+import com.algotrader.repository.jpa.StrategyLegJpaRepository;
+import com.algotrader.repository.redis.PositionRedisRepository;
 import com.algotrader.service.InstrumentService;
 import com.algotrader.strategy.StrategyFactory;
 import com.algotrader.strategy.base.BaseStrategy;
 import com.algotrader.strategy.base.BaseStrategyConfig;
 import com.algotrader.strategy.base.MarketSnapshot;
 import com.algotrader.strategy.base.StrategyContext;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
@@ -65,6 +75,9 @@ public class StrategyEngine {
 
     private static final Logger log = LoggerFactory.getLogger(StrategyEngine.class);
 
+    /** Parses strike and option type from NSE option trading symbols (e.g., NIFTY2621725400PE → 25400, PE). */
+    private static final Pattern OPTION_SYMBOL_PATTERN = Pattern.compile(".*?(\\d+\\.?\\d*)(CE|PE)$");
+
     /** Active strategy instances keyed by strategy ID. */
     private final ConcurrentHashMap<String, BaseStrategy> activeStrategies = new ConcurrentHashMap<>();
 
@@ -83,18 +96,24 @@ public class StrategyEngine {
     private final JournaledMultiLegExecutor journaledMultiLegExecutor;
     private final InstrumentService instrumentService;
     private final StrategyJpaRepository strategyJpaRepository;
+    private final StrategyLegJpaRepository strategyLegJpaRepository;
+    private final PositionRedisRepository positionRedisRepository;
 
     public StrategyEngine(
             StrategyFactory strategyFactory,
             EventPublisherHelper eventPublisherHelper,
             JournaledMultiLegExecutor journaledMultiLegExecutor,
             InstrumentService instrumentService,
-            StrategyJpaRepository strategyJpaRepository) {
+            StrategyJpaRepository strategyJpaRepository,
+            StrategyLegJpaRepository strategyLegJpaRepository,
+            PositionRedisRepository positionRedisRepository) {
         this.strategyFactory = strategyFactory;
         this.eventPublisherHelper = eventPublisherHelper;
         this.journaledMultiLegExecutor = journaledMultiLegExecutor;
         this.instrumentService = instrumentService;
         this.strategyJpaRepository = strategyJpaRepository;
+        this.strategyLegJpaRepository = strategyLegJpaRepository;
+        this.positionRedisRepository = positionRedisRepository;
     }
 
     // ========================
@@ -143,9 +162,17 @@ public class StrategyEngine {
 
         // If immediate entry with fixed legs, execute entry right after arming
         if (config.isImmediateEntry() && strategy.getStatus() == StrategyStatus.ARMED) {
+            List<OrderRequest> executedOrders = new ArrayList<>();
             withWriteLock(strategyId, () -> {
-                strategy.executeImmediateEntry();
+                executedOrders.addAll(strategy.executeImmediateEntry());
             });
+
+            // After entry: create leg entities and schedule async position linking
+            if (strategy.getStatus() == StrategyStatus.ACTIVE && !executedOrders.isEmpty()) {
+                createLegsFromExecutedOrders(strategyId, executedOrders);
+                persistStatusChange(strategyId, StrategyStatus.ACTIVE, "deployedAt", LocalDateTime.now());
+                schedulePositionLinking(strategyId, strategy, executedOrders);
+            }
         }
 
         return strategyId;
@@ -604,5 +631,186 @@ public class StrategyEngine {
             throw new ResourceNotFoundException("Strategy", strategyId);
         }
         return strategy;
+    }
+
+    // ========================
+    // POST-ENTRY POSITION LINKING
+    // ========================
+
+    /**
+     * Creates StrategyLegEntity records in H2 from the executed order requests.
+     * Legs are created with positionId=null; position linking happens async
+     * after order fills and reconciliation create positions in Redis.
+     */
+    private void createLegsFromExecutedOrders(String strategyId, List<OrderRequest> executedOrders) {
+        for (OrderRequest order : executedOrders) {
+            InstrumentType optionType = deriveOptionType(order.getTradingSymbol());
+            BigDecimal strike = deriveStrike(order.getTradingSymbol());
+            // Signed quantity: SELL orders get negative quantity
+            int signedQuantity = order.getSide() == OrderSide.SELL ? -order.getQuantity() : order.getQuantity();
+
+            StrategyLegEntity legEntity = StrategyLegEntity.builder()
+                    .id(UUID.randomUUID().toString())
+                    .strategyId(strategyId)
+                    .optionType(optionType)
+                    .strike(strike)
+                    .quantity(signedQuantity)
+                    .build();
+            strategyLegJpaRepository.save(legEntity);
+
+            log.info(
+                    "[{}] Created leg entity after immediate entry: legId={}, symbol={}, strike={}, qty={}",
+                    strategyId,
+                    legEntity.getId(),
+                    order.getTradingSymbol(),
+                    strike,
+                    signedQuantity);
+        }
+    }
+
+    /**
+     * Schedules async position linking after immediate entry.
+     *
+     * <p>Positions appear in Redis asynchronously: order fill arrives via Kite WebSocket,
+     * then KiteOrderUpdateHandler triggers reconciliation which syncs positions from
+     * the broker API to Redis. This typically takes 1-5 seconds for MARKET orders.
+     *
+     * <p>We retry twice (at 3s and 8s) to handle varying latency. If positions aren't
+     * found after retries, a warning is logged and manual adopt can be used as fallback.
+     */
+    private void schedulePositionLinking(String strategyId, BaseStrategy strategy, List<OrderRequest> executedOrders) {
+        Thread.startVirtualThread(() -> {
+            try {
+                // First attempt after 3 seconds
+                Thread.sleep(3000);
+                int linked = linkPositionsFromRedis(strategyId, strategy, executedOrders);
+
+                if (linked < executedOrders.size()) {
+                    // Retry after 5 more seconds for any remaining unlinked legs
+                    Thread.sleep(5000);
+                    linked += linkPositionsFromRedis(strategyId, strategy, executedOrders);
+                }
+
+                if (linked < executedOrders.size()) {
+                    log.warn(
+                            "[{}] Only linked {}/{} positions after immediate entry. "
+                                    + "Remaining legs can be linked via manual adopt.",
+                            strategyId,
+                            linked,
+                            executedOrders.size());
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("[{}] Position linking interrupted", strategyId);
+            } catch (Exception e) {
+                log.error("[{}] Error during async position linking: {}", strategyId, e.getMessage(), e);
+            }
+        });
+    }
+
+    /**
+     * Attempts to match unlinked strategy legs to positions in Redis by instrument token.
+     *
+     * @return number of newly linked positions in this pass
+     */
+    private int linkPositionsFromRedis(String strategyId, BaseStrategy strategy, List<OrderRequest> executedOrders) {
+        List<Position> allPositions = positionRedisRepository.findAll();
+        List<StrategyLegEntity> legs = strategyLegJpaRepository.findByStrategyId(strategyId);
+        int linkedCount = 0;
+
+        for (OrderRequest order : executedOrders) {
+            Long instrumentToken = order.getInstrumentToken();
+
+            // Check if a leg for this instrument already has a positionId
+            boolean alreadyLinked = legs.stream()
+                    .anyMatch(leg -> instrumentToken.equals(tokenFromLeg(leg, order)) && leg.getPositionId() != null);
+            if (alreadyLinked) {
+                continue;
+            }
+
+            // Find matching position in Redis by instrument token
+            Position matchedPosition = allPositions.stream()
+                    .filter(p -> instrumentToken.equals(p.getInstrumentToken()))
+                    .filter(p -> p.getQuantity() != 0) // Only active (non-zero) positions
+                    .findFirst()
+                    .orElse(null);
+
+            if (matchedPosition == null) {
+                continue;
+            }
+
+            // Find the unlinked leg entity for this instrument
+            StrategyLegEntity unlinkedLeg = legs.stream()
+                    .filter(leg -> leg.getPositionId() == null)
+                    .filter(leg -> matchesInstrument(leg, order))
+                    .findFirst()
+                    .orElse(null);
+
+            if (unlinkedLeg == null) {
+                continue;
+            }
+
+            // Link: set positionId on leg, add position to strategy, register reverse index
+            unlinkedLeg.setPositionId(matchedPosition.getId());
+            strategyLegJpaRepository.save(unlinkedLeg);
+
+            boolean alreadyInMemory = strategy.getPositions().stream()
+                    .anyMatch(p -> matchedPosition.getId().equals(p.getId()));
+            if (!alreadyInMemory) {
+                strategy.addPosition(matchedPosition);
+            }
+            registerPositionLink(matchedPosition.getId(), strategyId);
+
+            linkedCount++;
+            log.info(
+                    "[{}] Linked position after immediate entry: positionId={}, symbol={}, token={}",
+                    strategyId,
+                    matchedPosition.getId(),
+                    matchedPosition.getTradingSymbol(),
+                    instrumentToken);
+        }
+
+        return linkedCount;
+    }
+
+    /**
+     * Checks if a leg entity matches the instrument from an order request
+     * by comparing strike and option type.
+     */
+    private boolean matchesInstrument(StrategyLegEntity leg, OrderRequest order) {
+        InstrumentType orderOptionType = deriveOptionType(order.getTradingSymbol());
+        BigDecimal orderStrike = deriveStrike(order.getTradingSymbol());
+        return leg.getOptionType() == orderOptionType
+                && leg.getStrike() != null
+                && orderStrike != null
+                && leg.getStrike().compareTo(orderStrike) == 0;
+    }
+
+    /** Returns instrumentToken if it can be inferred from the leg+order combo, for already-linked check. */
+    private Long tokenFromLeg(StrategyLegEntity leg, OrderRequest order) {
+        if (matchesInstrument(leg, order)) {
+            return order.getInstrumentToken();
+        }
+        return null;
+    }
+
+    private InstrumentType deriveOptionType(String tradingSymbol) {
+        if (tradingSymbol == null) return null;
+        if (tradingSymbol.endsWith("CE")) return InstrumentType.CE;
+        if (tradingSymbol.endsWith("PE")) return InstrumentType.PE;
+        return null;
+    }
+
+    private BigDecimal deriveStrike(String tradingSymbol) {
+        if (tradingSymbol == null) return null;
+        Matcher matcher = OPTION_SYMBOL_PATTERN.matcher(tradingSymbol);
+        if (matcher.matches()) {
+            try {
+                return new BigDecimal(matcher.group(1));
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+        return null;
     }
 }

@@ -19,6 +19,7 @@ import com.algotrader.mapper.ExecutionJournalMapper;
 import com.algotrader.oms.JournaledMultiLegExecutor;
 import com.algotrader.oms.JournaledMultiLegExecutor.LegResult;
 import com.algotrader.oms.JournaledMultiLegExecutor.MultiLegResult;
+import com.algotrader.oms.OrderFillTracker;
 import com.algotrader.oms.OrderRequest;
 import com.algotrader.oms.OrderRouteResult;
 import com.algotrader.oms.OrderRouter;
@@ -45,6 +46,7 @@ class JournaledMultiLegExecutorTest {
     private ExecutionJournalJpaRepository executionJournalJpaRepository;
     private ExecutionJournalMapper executionJournalMapper;
     private EventPublisherHelper eventPublisherHelper;
+    private OrderFillTracker orderFillTracker;
     private JournaledMultiLegExecutor journaledMultiLegExecutor;
 
     @BeforeEach
@@ -54,13 +56,15 @@ class JournaledMultiLegExecutorTest {
         executionJournalJpaRepository = mock(ExecutionJournalJpaRepository.class);
         executionJournalMapper = mock(ExecutionJournalMapper.class);
         eventPublisherHelper = mock(EventPublisherHelper.class);
+        orderFillTracker = mock(OrderFillTracker.class);
 
         journaledMultiLegExecutor = new JournaledMultiLegExecutor(
                 orderRouter,
                 orderTagGenerator,
                 executionJournalJpaRepository,
                 executionJournalMapper,
-                eventPublisherHelper);
+                eventPublisherHelper,
+                orderFillTracker);
 
         // Default: tag generator returns a tag
         when(orderTagGenerator.generate(anyString(), any(OrderPriority.class))).thenReturn("STRENT0001");

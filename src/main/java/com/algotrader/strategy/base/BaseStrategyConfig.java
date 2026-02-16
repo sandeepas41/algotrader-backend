@@ -104,4 +104,11 @@ public class BaseStrategyConfig {
      * Set automatically when FE sends all FIXED legs with LIVE trading mode.
      */
     private boolean immediateEntry;
+
+    /**
+     * When true, BUY legs execute first and fills are confirmed before SELL legs.
+     * Provides margin benefit: long positions offset the margin requirement of short positions.
+     * Example: Bear Put Spread (BUY 25600PE + SELL 25400PE) — the bought put reduces margin for the sold put.
+     */
+    private boolean buyFirst;
 }

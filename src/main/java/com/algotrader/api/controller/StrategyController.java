@@ -160,6 +160,7 @@ public class StrategyController {
 
         config.setLegConfigs(legConfigs);
         config.setImmediateEntry(immediateEntry);
+        config.setBuyFirst(payload != null && Boolean.TRUE.equals(payload.getBuyFirst()));
 
         // Auto-arm when immediate entry is requested
         boolean autoArm = Boolean.TRUE.equals(body.get("autoArm")) || immediateEntry;
@@ -427,7 +428,7 @@ public class StrategyController {
         summary.put("expiry", strategy.getConfig().getExpiry());
         summary.put("positionCount", strategy.getPositions().size());
         summary.put("entryPremium", strategy.getEntryPremium());
-        summary.put("entryTime", strategy.getEntryTime());
+        summary.put("deployedAt", strategy.getEntryTime());
         summary.put("totalPnl", computeTotalPnl(strategy));
         summary.put("legs", buildLegs(id));
         return summary;

@@ -63,6 +63,9 @@ public abstract class BaseStrategy implements TradingStrategy {
     /** Default adjustment cooldown: 5 minutes for positional strategies. */
     private static final Duration DEFAULT_ADJUSTMENT_COOLDOWN = Duration.ofMinutes(5);
 
+    /** Default timeout for waiting on BUY fills in buy-first-then-sell mode. */
+    private static final Duration BUY_FILL_TIMEOUT = Duration.ofSeconds(30);
+
     // ---- Identity ----
     protected final String id;
     protected final String name;
@@ -325,29 +328,40 @@ public abstract class BaseStrategy implements TradingStrategy {
      *
      * <p>Each leg is resolved to a Kite instrument via InstrumentService for
      * proper tradingSymbol + instrumentToken. On success, transitions to ACTIVE.
+     *
+     * @return the executed OrderRequests (for leg creation + position linking), or empty list on failure
      */
-    public void executeImmediateEntry() {
+    public List<OrderRequest> executeImmediateEntry() {
         List<NewLegDefinition> legDefs = config.getLegConfigs();
         if (legDefs == null || legDefs.isEmpty()) {
             logDecision("ENTRY_SKIP", "No leg configs for immediate entry", Map.of());
-            return;
+            return List.of();
         }
 
         List<OrderRequest> orders = buildOrdersFromLegConfigs(legDefs);
         if (orders.isEmpty()) {
             logDecision("ENTRY_SKIP", "No orders built from leg configs", Map.of());
-            return;
+            return List.of();
         }
 
-        logDecision("ENTRY_EXEC", "Executing immediate entry", Map.of("legs", orders.size()));
+        logDecision(
+                "ENTRY_EXEC",
+                "Executing immediate entry",
+                Map.of("legs", orders.size(), "buyFirst", config.isBuyFirst()));
 
-        JournaledMultiLegExecutor.MultiLegResult result =
-                journaledMultiLegExecutor.executeParallel(orders, id, "ENTRY", OrderPriority.STRATEGY_ENTRY);
+        // Choose execution mode: buy-first-then-sell for margin benefit, or parallel
+        JournaledMultiLegExecutor.MultiLegResult result;
+        if (config.isBuyFirst()) {
+            result = journaledMultiLegExecutor.executeBuyFirstThenSell(
+                    orders, id, "ENTRY", OrderPriority.STRATEGY_ENTRY, BUY_FILL_TIMEOUT);
+        } else {
+            result = journaledMultiLegExecutor.executeParallel(orders, id, "ENTRY", OrderPriority.STRATEGY_ENTRY);
+        }
 
         if (!result.isSuccess()) {
             logDecision(
                     "ENTRY_FAILED", "Immediate entry failed, staying ARMED", Map.of("groupId", result.getGroupId()));
-            return;
+            return List.of();
         }
 
         long stamp = stampedLock.writeLock();
@@ -357,6 +371,8 @@ public abstract class BaseStrategy implements TradingStrategy {
         } finally {
             stampedLock.unlockWrite(stamp);
         }
+
+        return orders;
     }
 
     /**

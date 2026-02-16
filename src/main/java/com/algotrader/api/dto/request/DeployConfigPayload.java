@@ -29,6 +29,9 @@ public class DeployConfigPayload {
     private int lots = 1;
     private String tradingMode;
 
+    /** When true, BUY legs execute first and fills are confirmed before SELL legs for margin benefit. */
+    private Boolean buyFirst;
+
     /**
      * A single leg definition from the FE strategy builder.
      * Quantity is signed: positive = BUY, negative = SELL.

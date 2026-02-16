@@ -2,10 +2,12 @@ package com.algotrader.oms;
 
 import com.algotrader.domain.enums.JournalStatus;
 import com.algotrader.domain.enums.OrderPriority;
+import com.algotrader.domain.enums.OrderSide;
 import com.algotrader.entity.ExecutionJournalEntity;
 import com.algotrader.event.EventPublisherHelper;
 import com.algotrader.mapper.ExecutionJournalMapper;
 import com.algotrader.repository.jpa.ExecutionJournalJpaRepository;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -14,6 +16,8 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -53,6 +57,7 @@ public class JournaledMultiLegExecutor {
     private final ExecutionJournalJpaRepository executionJournalJpaRepository;
     private final ExecutionJournalMapper executionJournalMapper;
     private final EventPublisherHelper eventPublisherHelper;
+    private final OrderFillTracker orderFillTracker;
 
     /**
      * Virtual thread executor for parallel leg submission.
@@ -66,12 +71,14 @@ public class JournaledMultiLegExecutor {
             OrderTagGenerator orderTagGenerator,
             ExecutionJournalJpaRepository executionJournalJpaRepository,
             ExecutionJournalMapper executionJournalMapper,
-            EventPublisherHelper eventPublisherHelper) {
+            EventPublisherHelper eventPublisherHelper,
+            OrderFillTracker orderFillTracker) {
         this.orderRouter = orderRouter;
         this.orderTagGenerator = orderTagGenerator;
         this.executionJournalJpaRepository = executionJournalJpaRepository;
         this.executionJournalMapper = executionJournalMapper;
         this.eventPublisherHelper = eventPublisherHelper;
+        this.orderFillTracker = orderFillTracker;
     }
 
     /**
@@ -192,6 +199,190 @@ public class JournaledMultiLegExecutor {
 
         logDecision(strategyId, operationType, result);
         return result;
+    }
+
+    /**
+     * Executes BUY legs first, waits for broker fills, then executes SELL legs.
+     *
+     * <p>This two-phase execution provides margin benefit: long positions from BUY fills
+     * offset the margin requirement of subsequent SELL (short) positions. For example,
+     * in a Bear Put Spread (BUY 25600PE + SELL 25400PE), the bought put reduces the
+     * margin needed for the sold put.
+     *
+     * <p>If all legs are the same side (all BUY or all SELL), falls through to parallel
+     * execution since phasing provides no margin benefit.
+     *
+     * <p>BUY fill confirmation uses {@link OrderFillTracker} which listens for
+     * {@code OrderEvent.FILLED/REJECTED} events via Spring's event system.
+     *
+     * @param legs          all order requests (mixed BUY and SELL)
+     * @param strategyId    the strategy this operation belongs to
+     * @param operationType description of the operation (typically "ENTRY")
+     * @param priority      the priority for all legs
+     * @param fillTimeout   max time to wait for BUY fills before aborting
+     * @return result containing success/failure status and details per leg
+     */
+    public MultiLegResult executeBuyFirstThenSell(
+            List<OrderRequest> legs,
+            String strategyId,
+            String operationType,
+            OrderPriority priority,
+            Duration fillTimeout) {
+
+        // Partition into BUY and SELL legs
+        List<OrderRequest> buyLegs =
+                legs.stream().filter(l -> l.getSide() == OrderSide.BUY).toList();
+        List<OrderRequest> sellLegs =
+                legs.stream().filter(l -> l.getSide() == OrderSide.SELL).toList();
+
+        // If all same side, no phasing benefit — fall through to parallel
+        if (buyLegs.isEmpty() || sellLegs.isEmpty()) {
+            log.info(
+                    "buyFirstThenSell: all legs are same side (buy={}, sell={}), falling through to parallel",
+                    buyLegs.size(),
+                    sellLegs.size());
+            return executeParallel(legs, strategyId, operationType, priority);
+        }
+
+        String buyGroupId = UUID.randomUUID().toString();
+        String sellGroupId = UUID.randomUUID().toString();
+
+        log.info(
+                "Starting buy-first-then-sell: strategy={}, operation={}, buyLegs={}, sellLegs={}, buyGroupId={}, sellGroupId={}",
+                strategyId,
+                operationType,
+                buyLegs.size(),
+                sellLegs.size(),
+                buyGroupId,
+                sellGroupId);
+
+        // ---- Phase 1: Register fill await BEFORE routing (avoids race condition) ----
+        CompletableFuture<Void> buyFillsFuture = orderFillTracker.awaitFills(buyGroupId, buyLegs.size());
+
+        // Create journal entries for BUY phase
+        List<ExecutionJournalEntity> buyJournals =
+                createJournalEntries(buyLegs, strategyId, buyGroupId, operationType + "_BUY");
+
+        // Execute BUY legs in parallel
+        List<LegResult> buyResults = executeLegsConcurrently(buyLegs, buyJournals, strategyId, priority);
+
+        boolean buyRoutingFailed = buyResults.stream().anyMatch(r -> !r.isSuccess());
+        if (buyRoutingFailed) {
+            // Cancel the fill await — we won't get fills for failed routes
+            orderFillTracker.cancelAwait(buyGroupId);
+            rollbackFilledLegs(buyLegs, buyResults, strategyId, priority);
+
+            List<LegResult> allResults = new ArrayList<>(buyResults);
+            // Mark SELL legs as skipped
+            for (int i = 0; i < sellLegs.size(); i++) {
+                allResults.add(LegResult.skipped(buyLegs.size() + i));
+            }
+
+            MultiLegResult result = MultiLegResult.builder()
+                    .groupId(buyGroupId)
+                    .success(false)
+                    .legResults(allResults)
+                    .build();
+            logDecision(strategyId, operationType, result);
+            return result;
+        }
+
+        // ---- Phase 2: Wait for BUY fills ----
+        try {
+            buyFillsFuture.get(fillTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            log.info("All BUY fills confirmed: buyGroupId={}", buyGroupId);
+        } catch (TimeoutException e) {
+            log.error(
+                    "BUY fill timeout after {}s: buyGroupId={}, strategy={}. SELL legs NOT placed. BUY positions remain open for manual handling.",
+                    fillTimeout.toSeconds(),
+                    buyGroupId,
+                    strategyId);
+
+            List<LegResult> allResults = new ArrayList<>(buyResults);
+            for (int i = 0; i < sellLegs.size(); i++) {
+                allResults.add(LegResult.failed(
+                        buyLegs.size() + i, "Skipped: BUY fill timeout after " + fillTimeout.toSeconds() + "s"));
+            }
+
+            MultiLegResult result = MultiLegResult.builder()
+                    .groupId(buyGroupId)
+                    .success(false)
+                    .legResults(allResults)
+                    .build();
+            logDecision(strategyId, operationType, result);
+            return result;
+        } catch (Exception e) {
+            // OrderFillTracker.OrderRejectedException or InterruptedException
+            log.error("BUY phase failed: buyGroupId={}, strategy={}", buyGroupId, strategyId, e);
+
+            List<LegResult> allResults = new ArrayList<>(buyResults);
+            for (int i = 0; i < sellLegs.size(); i++) {
+                allResults.add(LegResult.failed(buyLegs.size() + i, "Skipped: BUY phase failed - " + e.getMessage()));
+            }
+
+            MultiLegResult result = MultiLegResult.builder()
+                    .groupId(buyGroupId)
+                    .success(false)
+                    .legResults(allResults)
+                    .build();
+            logDecision(strategyId, operationType, result);
+            return result;
+        }
+
+        // ---- Phase 3: Execute SELL legs ----
+        List<ExecutionJournalEntity> sellJournals =
+                createJournalEntries(sellLegs, strategyId, sellGroupId, operationType + "_SELL");
+
+        List<LegResult> sellResults = executeLegsConcurrently(sellLegs, sellJournals, strategyId, priority);
+
+        boolean sellRoutingFailed = sellResults.stream().anyMatch(r -> !r.isSuccess());
+        if (sellRoutingFailed) {
+            // Roll back SELL legs only — BUY legs are filled and remain (manual cleanup)
+            rollbackFilledLegs(sellLegs, sellResults, strategyId, priority);
+            log.warn(
+                    "SELL phase failed: sellGroupId={}, strategy={}. BUY positions remain open.",
+                    sellGroupId,
+                    strategyId);
+        }
+
+        // Combine results: BUY legs first, then SELL legs (reindex SELL legs)
+        List<LegResult> allResults = new ArrayList<>(buyResults);
+        for (LegResult sellResult : sellResults) {
+            allResults.add(LegResult.builder()
+                    .legIndex(buyLegs.size() + sellResult.getLegIndex())
+                    .success(sellResult.isSuccess())
+                    .tag(sellResult.getTag())
+                    .failureReason(sellResult.getFailureReason())
+                    .build());
+        }
+
+        MultiLegResult result = MultiLegResult.builder()
+                .groupId(buyGroupId + "+" + sellGroupId)
+                .success(!buyRoutingFailed && !sellRoutingFailed)
+                .legResults(allResults)
+                .build();
+
+        logDecision(strategyId, operationType, result);
+        return result;
+    }
+
+    /**
+     * Executes a list of legs concurrently and returns their results.
+     * Used internally by executeBuyFirstThenSell for each phase.
+     */
+    private List<LegResult> executeLegsConcurrently(
+            List<OrderRequest> legs, List<ExecutionJournalEntity> journals, String strategyId, OrderPriority priority) {
+        List<CompletableFuture<LegResult>> futures = new ArrayList<>();
+        for (int i = 0; i < legs.size(); i++) {
+            final int legIndex = i;
+            final OrderRequest leg = legs.get(i);
+            final ExecutionJournalEntity journal = journals.get(i);
+
+            CompletableFuture<LegResult> future = CompletableFuture.supplyAsync(
+                    () -> executeLeg(leg, journal, strategyId, priority, legIndex), parallelExecutor);
+            futures.add(future);
+        }
+        return futures.stream().map(CompletableFuture::join).toList();
     }
 
     /**
