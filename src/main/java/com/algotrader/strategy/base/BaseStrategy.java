@@ -556,7 +556,8 @@ public abstract class BaseStrategy implements TradingStrategy {
     // ========================
 
     private void evaluateExit(MarketSnapshot snapshot) {
-        boolean exit = shouldExit(snapshot);
+        // Absolute PnL exit check runs at base level (applies to all strategy types)
+        boolean exit = shouldExitByAbsolutePnl() || shouldExit(snapshot);
         BigDecimal currentPnl = calculateTotalPnl();
 
         logDecision(
@@ -690,6 +691,36 @@ public abstract class BaseStrategy implements TradingStrategy {
         if (entryPremium == null || stopLossMultiplier == null) return false;
         BigDecimal stopLoss = entryPremium.multiply(stopLossMultiplier).negate();
         return calculateTotalPnl().compareTo(stopLoss) <= 0;
+    }
+
+    /**
+     * Returns true if total PnL has hit the absolute profit target or stop-loss.
+     * Evaluates config.targetPnl and config.stopLossPnl against calculateTotalPnl().
+     * Both are optional (null = disabled). Unlike the %-based helpers, these work
+     * without entryPremium, making them suitable for adopted strategies.
+     */
+    protected boolean shouldExitByAbsolutePnl() {
+        BigDecimal currentPnl = calculateTotalPnl();
+
+        BigDecimal target = config.getTargetPnl();
+        if (target != null && currentPnl.compareTo(target) >= 0) {
+            logDecision(
+                    "EXIT_CONDITION",
+                    "Absolute profit target reached",
+                    Map.of("currentPnl", currentPnl.toString(), "targetPnl", target.toString()));
+            return true;
+        }
+
+        BigDecimal stopLoss = config.getStopLossPnl();
+        if (stopLoss != null && currentPnl.compareTo(stopLoss) <= 0) {
+            logDecision(
+                    "EXIT_CONDITION",
+                    "Absolute stop-loss hit",
+                    Map.of("currentPnl", currentPnl.toString(), "stopLossPnl", stopLoss.toString()));
+            return true;
+        }
+
+        return false;
     }
 
     /**

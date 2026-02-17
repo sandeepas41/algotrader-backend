@@ -25,6 +25,7 @@ import com.algotrader.strategy.base.BaseStrategy;
 import com.algotrader.strategy.base.BaseStrategyConfig;
 import com.algotrader.strategy.base.MarketSnapshot;
 import com.algotrader.strategy.base.StrategyContext;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -246,6 +247,37 @@ public class StrategyEngine {
             BaseStrategy strategy = getOrThrow(strategyId);
             strategy.initiateClose();
             persistStatusChange(strategyId, StrategyStatus.CLOSING);
+        });
+    }
+
+    /**
+     * Updates the absolute PnL exit thresholds at runtime.
+     * Acquires write lock since it modifies strategy config.
+     * Persists updated config JSON to H2 so changes survive restart.
+     */
+    public void updateExitConfig(String strategyId, BigDecimal targetPnl, BigDecimal stopLossPnl) {
+        withWriteLock(strategyId, () -> {
+            BaseStrategy strategy = getOrThrow(strategyId);
+            BaseStrategyConfig config = strategy.getConfig();
+
+            if (targetPnl != null) config.setTargetPnl(targetPnl);
+            if (stopLossPnl != null) config.setStopLossPnl(stopLossPnl);
+
+            // Persist updated config to H2
+            try {
+                strategyJpaRepository.updateConfig(strategyId, JsonHelper.toJson(config));
+            } catch (Exception e) {
+                log.error("Failed to persist exit config for strategy {}: {}", strategyId, e.getMessage(), e);
+            }
+
+            eventPublisherHelper.publishDecision(
+                    this,
+                    "CONFIG_UPDATE",
+                    "Exit config updated",
+                    strategyId,
+                    Map.of(
+                            "targetPnl", String.valueOf(targetPnl),
+                            "stopLossPnl", String.valueOf(stopLossPnl)));
         });
     }
 

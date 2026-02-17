@@ -111,4 +111,19 @@ public class BaseStrategyConfig {
      * Example: Bear Put Spread (BUY 25600PE + SELL 25400PE) — the bought put reduces margin for the sold put.
      */
     private boolean buyFirst;
+
+    /**
+     * Absolute profit target in Rs. Close strategy when total PnL >= this value.
+     * Null = disabled. Example: 5000 = close when profit reaches Rs 5,000.
+     * Unlike targetPercent (relative to entryPremium), this is absolute and works
+     * for adopted strategies where entryPremium may not be set.
+     */
+    private BigDecimal targetPnl;
+
+    /**
+     * Absolute stop-loss in Rs (should be negative, e.g., -10000).
+     * Close strategy when total PnL <= this value.
+     * Null = disabled. Example: -10000 = close when losing Rs 10,000.
+     */
+    private BigDecimal stopLossPnl;
 }

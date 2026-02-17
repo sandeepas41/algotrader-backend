@@ -1,13 +1,17 @@
 package com.algotrader.api.controller;
 
 import com.algotrader.api.dto.request.AdoptRequest;
+import com.algotrader.api.dto.request.CloseLegRequest;
 import com.algotrader.api.dto.request.DeployConfigPayload;
 import com.algotrader.api.dto.request.DeployWithAdoptionRequest;
 import com.algotrader.api.dto.request.DetachRequest;
+import com.algotrader.api.dto.request.ExitConfigUpdateRequest;
+import com.algotrader.api.dto.request.RollLegRequest;
 import com.algotrader.core.engine.StrategyEngine;
 import com.algotrader.domain.enums.ActionType;
 import com.algotrader.domain.enums.InstrumentType;
 import com.algotrader.domain.enums.OrderSide;
+import com.algotrader.domain.enums.OrderType;
 import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.domain.model.AdjustmentAction;
 import com.algotrader.domain.model.AdjustmentRule;
@@ -18,6 +22,7 @@ import com.algotrader.mapper.AdjustmentRuleMapper;
 import com.algotrader.mapper.JsonHelper;
 import com.algotrader.repository.jpa.AdjustmentRuleJpaRepository;
 import com.algotrader.repository.jpa.StrategyLegJpaRepository;
+import com.algotrader.strategy.LegOperationService;
 import com.algotrader.strategy.adoption.AdoptionResult;
 import com.algotrader.strategy.adoption.PositionAdoptionService;
 import com.algotrader.strategy.base.BaseStrategy;
@@ -49,6 +54,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -68,6 +74,9 @@ import org.springframework.web.bind.annotation.RestController;
  *   <li>POST /api/strategies/{id}/close -- initiate close (exit positions)</li>
  *   <li>POST /api/strategies/{id}/adopt -- adopt a broker position into the strategy</li>
  *   <li>POST /api/strategies/{id}/detach -- detach a position from the strategy</li>
+ *   <li>PUT /api/strategies/{id}/exit-config -- update absolute PnL exit thresholds</li>
+ *   <li>POST /api/strategies/{id}/close-leg -- close a single leg (MARKET or LIMIT)</li>
+ *   <li>POST /api/strategies/{id}/roll-leg -- roll a leg to a different strike</li>
  *   <li>POST /api/strategies/{id}/force-adjust -- force manual adjustment</li>
  *   <li>POST /api/strategies/pause-all -- pause all active strategies</li>
  *   <li>DELETE /api/strategies/{id} -- undeploy a closed strategy</li>
@@ -81,6 +90,7 @@ public class StrategyController {
 
     private final StrategyEngine strategyEngine;
     private final PositionAdoptionService positionAdoptionService;
+    private final LegOperationService legOperationService;
     private final StrategyLegJpaRepository strategyLegJpaRepository;
     private final AdjustmentRuleJpaRepository adjustmentRuleJpaRepository;
     private final AdjustmentRuleMapper adjustmentRuleMapper;
@@ -88,11 +98,13 @@ public class StrategyController {
     public StrategyController(
             StrategyEngine strategyEngine,
             PositionAdoptionService positionAdoptionService,
+            LegOperationService legOperationService,
             StrategyLegJpaRepository strategyLegJpaRepository,
             AdjustmentRuleJpaRepository adjustmentRuleJpaRepository,
             AdjustmentRuleMapper adjustmentRuleMapper) {
         this.strategyEngine = strategyEngine;
         this.positionAdoptionService = positionAdoptionService;
+        this.legOperationService = legOperationService;
         this.strategyLegJpaRepository = strategyLegJpaRepository;
         this.adjustmentRuleJpaRepository = adjustmentRuleJpaRepository;
         this.adjustmentRuleMapper = adjustmentRuleMapper;
@@ -365,6 +377,49 @@ public class StrategyController {
     }
 
     /**
+     * Updates the absolute PnL exit config at runtime (no restart required).
+     * Only modifies targetPnl and stopLossPnl on the in-memory config + persists to H2.
+     */
+    @PutMapping("/{id}/exit-config")
+    public ResponseEntity<Map<String, Object>> updateExitConfig(
+            @PathVariable String id, @Valid @RequestBody ExitConfigUpdateRequest request) {
+        strategyEngine.updateExitConfig(id, request.getTargetPnl(), request.getStopLossPnl());
+        return ResponseEntity.ok(Map.of("message", "Exit config updated", "strategyId", id));
+    }
+
+    /**
+     * Close a single strategy leg by placing an exit order for its linked position.
+     * Supports MARKET and LIMIT orders — LIMIT is needed for instruments where Kite rejects MARKET.
+     */
+    @PostMapping("/{id}/close-leg")
+    public ResponseEntity<Map<String, Object>> closeLeg(
+            @PathVariable String id, @Valid @RequestBody CloseLegRequest request) {
+        OrderType orderType = request.getOrderType() != null ? request.getOrderType() : OrderType.MARKET;
+        String groupId = legOperationService.closeLeg(id, request.getLegId(), orderType, request.getPrice());
+        return ResponseEntity.ok(Map.of("success", true, "message", "Leg close order placed", "groupId", groupId));
+    }
+
+    /**
+     * Roll a strategy leg to a different strike: close current position, open new one.
+     * Both close and open orders support MARKET/LIMIT independently.
+     */
+    @PostMapping("/{id}/roll-leg")
+    public ResponseEntity<Map<String, Object>> rollLeg(
+            @PathVariable String id, @Valid @RequestBody RollLegRequest request) {
+        OrderType closeType = request.getCloseOrderType() != null ? request.getCloseOrderType() : OrderType.MARKET;
+        OrderType openType = request.getOpenOrderType() != null ? request.getOpenOrderType() : OrderType.MARKET;
+        String groupId = legOperationService.rollLeg(
+                id,
+                request.getLegId(),
+                request.getNewStrike(),
+                closeType,
+                request.getClosePrice(),
+                openType,
+                request.getOpenPrice());
+        return ResponseEntity.ok(Map.of("success", true, "message", "Leg roll orders placed", "groupId", groupId));
+    }
+
+    /**
      * Forces a manual adjustment on an active strategy, bypassing cooldown.
      */
     @PostMapping("/{id}/force-adjust")
@@ -503,6 +558,8 @@ public class StrategyController {
         configMap.put("strikeInterval", config.getStrikeInterval());
         configMap.put("autoPausePnlThreshold", config.getAutoPausePnlThreshold());
         configMap.put("autoPauseDeltaThreshold", config.getAutoPauseDeltaThreshold());
+        configMap.put("targetPnl", config.getTargetPnl());
+        configMap.put("stopLossPnl", config.getStopLossPnl());
 
         if (config instanceof PositionalStrategyConfig positionalConfig) {
             configMap.put("targetPercent", positionalConfig.getTargetPercent());

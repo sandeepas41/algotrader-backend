@@ -57,4 +57,10 @@ public interface StrategyJpaRepository extends JpaRepository<StrategyEntity, Str
     @Query("UPDATE StrategyEntity s SET s.status = :status, s.closedAt = :closedAt WHERE s.id = :id")
     void updateStatusAndClosedAt(
             @Param("id") String id, @Param("status") StrategyStatus status, @Param("closedAt") LocalDateTime closedAt);
+
+    /** Update the config JSON column for runtime config changes (exit thresholds, etc.). */
+    @Modifying
+    @Transactional
+    @Query("UPDATE StrategyEntity s SET s.config = :config WHERE s.id = :id")
+    void updateConfig(@Param("id") String id, @Param("config") String config);
 }
