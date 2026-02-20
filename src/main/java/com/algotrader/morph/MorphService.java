@@ -32,6 +32,7 @@ import com.algotrader.oms.OrderRequest;
 import com.algotrader.repository.jpa.MorphHistoryJpaRepository;
 import com.algotrader.repository.jpa.MorphPlanJpaRepository;
 import com.algotrader.strategy.base.BaseStrategy;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -351,8 +352,13 @@ public class MorphService {
                             .build())
                     .toList();
 
-            JournaledMultiLegExecutor.MultiLegResult closeResult = journaledMultiLegExecutor.executeParallel(
-                    closeOrders, request.getSourceStrategyId(), "MORPH_CLOSE", OrderPriority.STRATEGY_ADJUSTMENT);
+            // Buy-first: buying back short positions frees margin before selling long positions
+            JournaledMultiLegExecutor.MultiLegResult closeResult = journaledMultiLegExecutor.executeBuyFirstThenSell(
+                    closeOrders,
+                    request.getSourceStrategyId(),
+                    "MORPH_CLOSE",
+                    OrderPriority.STRATEGY_ADJUSTMENT,
+                    Duration.ofSeconds(morphConfig.getCloseOrderTimeoutSeconds()));
 
             if (!closeResult.isSuccess()) {
                 throw new BusinessException(

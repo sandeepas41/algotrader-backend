@@ -64,12 +64,17 @@ class BaseStrategyTest {
         instrumentService = mock(InstrumentService.class);
 
         // Default: entry execution succeeds (strategies transition to ACTIVE)
+        JournaledMultiLegExecutor.MultiLegResult successResult = JournaledMultiLegExecutor.MultiLegResult.builder()
+                .groupId("test-group")
+                .success(true)
+                .legResults(List.of())
+                .build();
         when(journaledMultiLegExecutor.executeParallel(any(), anyString(), anyString(), any()))
-                .thenReturn(JournaledMultiLegExecutor.MultiLegResult.builder()
-                        .groupId("test-group")
-                        .success(true)
-                        .legResults(List.of())
-                        .build());
+                .thenReturn(successResult);
+        // Close/exit uses buy-first-then-sell (buys back shorts first to free margin)
+        when(journaledMultiLegExecutor.executeBuyFirstThenSell(
+                        any(), anyString(), anyString(), any(), any(Duration.class)))
+                .thenReturn(successResult);
 
         config = PositionalStrategyConfig.builder()
                 .underlying("NIFTY")
@@ -188,7 +193,8 @@ class BaseStrategyTest {
 
             assertThat(strategy.getStatus()).isEqualTo(StrategyStatus.CLOSING);
             verify(journaledMultiLegExecutor)
-                    .executeParallel(any(), eq("STR-1"), eq("EXIT"), eq(OrderPriority.STRATEGY_EXIT));
+                    .executeBuyFirstThenSell(
+                            any(), eq("STR-1"), eq("EXIT"), eq(OrderPriority.STRATEGY_EXIT), any(Duration.class));
         }
 
         @Test

@@ -6,6 +6,7 @@ import com.algotrader.api.dto.request.NewLegDefinitionDto;
 import com.algotrader.api.dto.response.MorphPlanResponse;
 import com.algotrader.api.dto.response.MorphPreviewResponse;
 import com.algotrader.api.dto.response.MorphResultResponse;
+import com.algotrader.api.dto.response.SimpleMorphPreviewResponse;
 import com.algotrader.api.dto.response.StrategyLineageResponse;
 import com.algotrader.api.dto.response.StrategyLineageTreeResponse;
 import com.algotrader.domain.model.MorphExecutionPlan;
@@ -14,6 +15,7 @@ import com.algotrader.domain.model.MorphRequest;
 import com.algotrader.domain.model.MorphResult;
 import com.algotrader.domain.model.MorphTarget;
 import com.algotrader.domain.model.NewLegDefinition;
+import com.algotrader.domain.model.SimpleMorphPlan;
 import com.algotrader.domain.model.StrategyLineage;
 import com.algotrader.domain.model.StrategyLineageTree;
 import java.util.List;
@@ -50,6 +52,9 @@ public interface MorphDtoMapper {
     @Mapping(target = "ancestors", source = "ancestors")
     @Mapping(target = "descendants", source = "descendants")
     StrategyLineageTreeResponse toResponse(StrategyLineageTree tree);
+
+    // SimpleMorphPlan -> SimpleMorphPreviewResponse (simplified morph API)
+    SimpleMorphPreviewResponse toSimplePreviewResponse(SimpleMorphPlan plan);
 
     // Preview: MorphExecutionPlan -> MorphPreviewResponse
     default MorphPreviewResponse toPreviewResponse(MorphExecutionPlan plan) {

@@ -283,9 +283,10 @@ public abstract class BaseStrategy implements TradingStrategy {
         }
 
         // Execute exit orders OUTSIDE the lock to avoid holding it during I/O
+        // Buy-first: buying back short positions frees margin before selling long positions
         if (!exitOrders.isEmpty() && journaledMultiLegExecutor != null) {
-            JournaledMultiLegExecutor.MultiLegResult result =
-                    journaledMultiLegExecutor.executeParallel(exitOrders, id, "EXIT", OrderPriority.STRATEGY_EXIT);
+            JournaledMultiLegExecutor.MultiLegResult result = journaledMultiLegExecutor.executeBuyFirstThenSell(
+                    exitOrders, id, "EXIT", OrderPriority.STRATEGY_EXIT, BUY_FILL_TIMEOUT);
 
             if (!result.isSuccess()) {
                 logDecision(

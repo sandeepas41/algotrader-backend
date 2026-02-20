@@ -17,7 +17,12 @@ import com.algotrader.domain.enums.StrategyStatus;
 import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.domain.model.AdjustmentAction;
 import com.algotrader.domain.model.Position;
+import com.algotrader.mapper.AdjustmentRuleMapper;
+import com.algotrader.morph.MorphService;
+import com.algotrader.morph.MorphTargetResolver;
+import com.algotrader.repository.jpa.AdjustmentRuleJpaRepository;
 import com.algotrader.repository.jpa.StrategyLegJpaRepository;
+import com.algotrader.strategy.LegOperationService;
 import com.algotrader.strategy.adoption.PositionAdoptionService;
 import com.algotrader.strategy.base.BaseStrategy;
 import com.algotrader.strategy.base.BaseStrategyConfig;
@@ -53,7 +58,22 @@ class StrategyControllerTest {
     private PositionAdoptionService positionAdoptionService;
 
     @Mock
+    private LegOperationService legOperationService;
+
+    @Mock
     private StrategyLegJpaRepository strategyLegJpaRepository;
+
+    @Mock
+    private AdjustmentRuleJpaRepository adjustmentRuleJpaRepository;
+
+    @Mock
+    private AdjustmentRuleMapper adjustmentRuleMapper;
+
+    @Mock
+    private MorphTargetResolver morphTargetResolver;
+
+    @Mock
+    private MorphService morphService;
 
     @Mock
     private BaseStrategy straddleStrategy;
@@ -63,8 +83,15 @@ class StrategyControllerTest {
 
     @BeforeEach
     void setUp() {
-        StrategyController controller =
-                new StrategyController(strategyEngine, positionAdoptionService, strategyLegJpaRepository);
+        StrategyController controller = new StrategyController(
+                strategyEngine,
+                positionAdoptionService,
+                legOperationService,
+                strategyLegJpaRepository,
+                adjustmentRuleJpaRepository,
+                adjustmentRuleMapper,
+                morphTargetResolver,
+                morphService);
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new ApiResponseAdvice())
                 .build();
@@ -85,11 +112,15 @@ class StrategyControllerTest {
         when(straddleStrategy.getPositions())
                 .thenReturn(List.of(
                         Position.builder()
+                                .instrumentToken(12345L)
                                 .tradingSymbol("NIFTY25FEB24500CE")
+                                .averagePrice(BigDecimal.valueOf(100))
                                 .quantity(-50)
                                 .build(),
                         Position.builder()
+                                .instrumentToken(12346L)
                                 .tradingSymbol("NIFTY25FEB24500PE")
+                                .averagePrice(BigDecimal.valueOf(110))
                                 .quantity(-50)
                                 .build()));
 
@@ -114,7 +145,9 @@ class StrategyControllerTest {
     @DisplayName("GET /api/strategies/{id} returns strategy detail")
     void getStrategyReturnsDetail() throws Exception {
         Position pos = Position.builder()
+                .instrumentToken(12345L)
                 .tradingSymbol("NIFTY25FEB24500CE")
+                .averagePrice(BigDecimal.valueOf(100))
                 .quantity(-50)
                 .build();
         BaseStrategyConfig config = BaseStrategyConfig.builder()

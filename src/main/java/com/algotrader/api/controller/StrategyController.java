@@ -7,6 +7,7 @@ import com.algotrader.api.dto.request.DeployWithAdoptionRequest;
 import com.algotrader.api.dto.request.DetachRequest;
 import com.algotrader.api.dto.request.ExitConfigUpdateRequest;
 import com.algotrader.api.dto.request.RollLegRequest;
+import com.algotrader.api.dto.response.SimpleMorphPreviewResponse;
 import com.algotrader.core.engine.StrategyEngine;
 import com.algotrader.domain.enums.ActionType;
 import com.algotrader.domain.enums.InstrumentType;
@@ -15,11 +16,17 @@ import com.algotrader.domain.enums.OrderType;
 import com.algotrader.domain.enums.StrategyType;
 import com.algotrader.domain.model.AdjustmentAction;
 import com.algotrader.domain.model.AdjustmentRule;
+import com.algotrader.domain.model.MorphRequest;
+import com.algotrader.domain.model.MorphResult;
 import com.algotrader.domain.model.NewLegDefinition;
 import com.algotrader.domain.model.Position;
+import com.algotrader.domain.model.SimpleMorphPlan;
 import com.algotrader.entity.StrategyLegEntity;
 import com.algotrader.mapper.AdjustmentRuleMapper;
 import com.algotrader.mapper.JsonHelper;
+import com.algotrader.mapper.MorphDtoMapper;
+import com.algotrader.morph.MorphService;
+import com.algotrader.morph.MorphTargetResolver;
 import com.algotrader.repository.jpa.AdjustmentRuleJpaRepository;
 import com.algotrader.repository.jpa.StrategyLegJpaRepository;
 import com.algotrader.strategy.LegOperationService;
@@ -47,6 +54,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.mapstruct.factory.Mappers;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
@@ -57,6 +65,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -80,6 +89,8 @@ import org.springframework.web.bind.annotation.RestController;
  *   <li>POST /api/strategies/{id}/force-adjust -- force manual adjustment</li>
  *   <li>POST /api/strategies/pause-all -- pause all active strategies</li>
  *   <li>DELETE /api/strategies/{id} -- undeploy a closed strategy</li>
+ *   <li>GET /api/strategies/{id}/morph/preview?targetType=X -- simplified morph preview</li>
+ *   <li>POST /api/strategies/{id}/morph -- simplified morph execution</li>
  * </ul>
  */
 @RestController
@@ -94,6 +105,10 @@ public class StrategyController {
     private final StrategyLegJpaRepository strategyLegJpaRepository;
     private final AdjustmentRuleJpaRepository adjustmentRuleJpaRepository;
     private final AdjustmentRuleMapper adjustmentRuleMapper;
+    private final MorphTargetResolver morphTargetResolver;
+    private final MorphService morphService;
+
+    private final MorphDtoMapper morphDtoMapper = Mappers.getMapper(MorphDtoMapper.class);
 
     public StrategyController(
             StrategyEngine strategyEngine,
@@ -101,13 +116,17 @@ public class StrategyController {
             LegOperationService legOperationService,
             StrategyLegJpaRepository strategyLegJpaRepository,
             AdjustmentRuleJpaRepository adjustmentRuleJpaRepository,
-            AdjustmentRuleMapper adjustmentRuleMapper) {
+            AdjustmentRuleMapper adjustmentRuleMapper,
+            MorphTargetResolver morphTargetResolver,
+            MorphService morphService) {
         this.strategyEngine = strategyEngine;
         this.positionAdoptionService = positionAdoptionService;
         this.legOperationService = legOperationService;
         this.strategyLegJpaRepository = strategyLegJpaRepository;
         this.adjustmentRuleJpaRepository = adjustmentRuleJpaRepository;
         this.adjustmentRuleMapper = adjustmentRuleMapper;
+        this.morphTargetResolver = morphTargetResolver;
+        this.morphService = morphService;
     }
 
     /**
@@ -480,6 +499,46 @@ public class StrategyController {
         BaseStrategy strategy = strategyEngine.getStrategy(id);
         AdoptionResult adoptionResult = positionAdoptionService.detachPosition(strategy, detachRequest.getPositionId());
         return ResponseEntity.ok(adoptionResult);
+    }
+
+    // ========================
+    // SIMPLIFIED MORPH
+    // ========================
+
+    /**
+     * Preview a simplified morph: auto-resolves which legs to keep, close, and open
+     * based on the source strategy type and the requested target type.
+     *
+     * <p>Returns a response matching the FE's MorphPreview shape with leg entity IDs
+     * for keep/close and descriptive strings for new legs to open.
+     */
+    @GetMapping("/{id}/morph/preview")
+    public ResponseEntity<SimpleMorphPreviewResponse> simpleMorphPreview(
+            @PathVariable String id, @RequestParam StrategyType targetType) {
+        SimpleMorphPlan plan = morphTargetResolver.resolve(id, targetType);
+        return ResponseEntity.ok(morphDtoMapper.toSimplePreviewResponse(plan));
+    }
+
+    /**
+     * Execute a simplified morph: auto-resolves the morph plan and delegates to
+     * {@link MorphService}. Only supports retention-only morphs (no new legs).
+     * Morphs requiring strike selection return a 400 error.
+     */
+    @PostMapping("/{id}/morph")
+    public ResponseEntity<Map<String, Object>> simpleMorph(
+            @PathVariable String id, @RequestBody Map<String, String> body) {
+        StrategyType targetType = StrategyType.valueOf(body.get("targetType"));
+        SimpleMorphPlan plan = morphTargetResolver.resolve(id, targetType);
+
+        MorphRequest morphRequest = morphTargetResolver.toMorphRequest(id, plan);
+        MorphResult result = morphService.morph(morphRequest);
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("success", result.isSuccess());
+        response.put("sourceStrategyId", id);
+        response.put("newStrategyIds", result.getNewStrategyIds());
+        response.put("message", result.isSuccess() ? "Strategy morphed successfully" : result.getErrorMessage());
+        return ResponseEntity.ok(response);
     }
 
     private Map<String, Object> buildStrategySummary(String id, BaseStrategy strategy) {
